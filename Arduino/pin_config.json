@@ -1,0 +1,127 @@
+{
+	"LASER_POWER_CONTROL_DAC_PIN": {
+		"pin": "DAC0",
+		"kind": "dac_pin",
+		"unit": "W",
+		"conversion": 1,
+		"min_value": 0.0,
+		"max_value": 3.3,
+		"log_default": true,
+		"alias": "Laser Power"
+	},
+	"OBJECTIVE_HEATER_CONTROL_DAC_PIN": {
+		"pin": "DAC1",
+		"kind": "dac_pin",
+		"unit": "°C",
+		"conversion": 10,
+		"min_value": 0.0,
+		"max_value": 33.0,
+		"log_default": true,
+		"alias": "Objective Heater"
+	},
+	"SEED_MONITOR_ANALOG_READ": {
+		"pin": "A11",
+		"kind": "analog_read",
+		"unit": "VOLT",
+		"conversion": 1,
+		"log_default": true,
+		"alias": "Seed Monitor"
+	},
+	"T_ACT_P_ANALOG_READ": {
+		"pin": "A10",
+		"kind": "analog_read",
+		"unit": "V",
+		"conversion": 1,
+		"log_default": true,
+		"alias": "T Act P",
+		"pair_graph_code":1
+	},
+	"T_ACT_SET_P_ANALOG_READ": {
+		"pin": "A9",
+		"kind": "analog_read",
+		"unit": "V",
+		"conversion": 1,
+		"log_default": true,
+		"alias": "T Act Set P",
+		"pair_graph_code":1
+	},
+	
+	"AMPLIFIER_PUMP_DIODE_CURRENT": {
+		"pin": "A7",
+		"kind": "analog_read",
+		"unit": "A",
+		"conversion": 5,
+		"log_default": true,
+		"alias": "Pump Diode Current"
+	},
+
+	"LASER_HEAD_OUTPUT_POWER": {
+		"pin": "A6",
+		"kind": "analog_read",
+		"unit": "W",
+		"conversion": 2.77778,
+		"log_default": true,
+		"alias": "Laser Output Power"
+	},
+
+	"PRE_AMPLIFIER_PUMP_DIODE_CURRENT": {
+		"pin": "A5",
+		"kind": "analog_read",
+		"unit": "A",
+		"conversion": 5,
+		"log_default": true,
+		"alias": "Pre Amp Pump Current"
+	},
+	"LASER_HEAD_TEMPERATURE": {
+		"pin": "A4",
+		"kind": "analog_read",
+		"unit": "V",
+		"conversion": 1,
+		"log_default": true,
+		"alias": "Laser Head Temp"
+	},
+
+	"OBJECTIVE_TEMPERATURE_ANALOG_READ": {
+		"pin": "A8",
+		"kind": "analog_read",
+		"unit": "°C",
+		"conversion": 10,
+		"log_default": true,
+		"alias": "Objective Temp"
+	},
+
+	"SHTC3_TEMPERATURE": {
+		"sensor": "SHTC3",
+		"bus": 0,
+		"address": "0x70",
+		"quantity": "temperature",
+		"unit": "°C",
+		"min_value": -40.0,
+		"max_value": 125.0,
+		"log_default": true,
+		"frequency_khz": 100,
+		"alias": "Ambient Temp"
+	},
+	"SHTC3_HUMIDITY": {
+		"sensor": "SHTC3",
+		"bus": 0,
+		"address": "0x70",
+		"quantity": "humidity",
+		"unit": "%RH",
+		"min_value": 0.0,
+		"max_value": 100.0,
+		"log_default": true,
+		"frequency_khz": 100,
+		"alias": "Ambient Humidity"
+	},
+	"HAMAMATSU_TRIG_DIGITAL_PIN": {
+		"pin": "D13",
+		"log_default": false,
+		"alias": "Hamamatsu Trigger"
+	},
+	"ALLIED_VISION_TRIG_DIGITAL_PIN": {
+		"pin": "D12",
+		"log_default": false,
+		"alias": "Allied Vision Trigger"
+	}
+}

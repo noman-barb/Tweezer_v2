@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package slm;
+
+import "google/protobuf/timestamp.proto";
+
+message AffineParameters {
+  double translate_x = 1;
+  double translate_y = 2;
+  double translate_z = 3;
+  double rotate_x_deg = 4;
+  double rotate_y_deg = 5;
+  double rotate_z_deg = 6;
+  double scale_x = 7;
+  double scale_y = 8;
+  double scale_z = 9;
+  double shear_xy = 10;
+  double shear_yz = 11;
+  double shear_xz = 12;
+}
+
+message TweezerPoint {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+  double intensity = 4;
+}
+
+message TweezerCommand {
+  string command_id = 1;
+  repeated TweezerPoint points = 2;
+  AffineParameters affine = 3;
+  google.protobuf.Timestamp requested_at = 4;
+}
+
+message Metrics {
+  int64 generation_ms = 1;
+  int64 driver_transfer_ms = 2;
+  int64 slm_update_ms = 3;
+  google.protobuf.Timestamp hologram_generated_at = 4;
+  google.protobuf.Timestamp hologram_sent_at = 5;
+  google.protobuf.Timestamp slm_ack_at = 6;
+}
+
+message HologramFrame {
+  string command_id = 1;
+  bytes hologram = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  AffineParameters affine = 5;
+  Metrics metrics = 6;
+}
+
+message UpdateConfirmation {
+  string command_id = 1;
+  Metrics metrics = 2;
+  string status = 3;
+  string detail = 4;
+}
+
+message CommandAcknowledge {
+  string command_id = 1;
+  string stage = 2;
+  string detail = 3;
+  Metrics metrics = 4;
+}
+
+service ControlService {
+  rpc StreamCommands(stream TweezerCommand) returns (stream CommandAcknowledge);
+}
+
+service DriverService {
+  rpc PushHolograms(stream HologramFrame) returns (stream UpdateConfirmation);
+}

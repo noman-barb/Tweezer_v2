@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package images;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+
+// Carries a single image payload from uploaders.
+message ImageChunk {
+  string filename = 1;
+  int64 timestamp_ms = 2;
+  bytes data = 3;
+  string source = 4;
+  int64 sequence = 5;
+}
+
+// Acknowledgement after the server stores an image.
+message UploadAck {
+  bool ok = 1;
+  string message = 2;
+}
+
+// Request for the most recent cached image.
+message LatestImageRequest {}
+
+// Response that may embed the latest image.
+message LatestImageReply {
+  bool has_image = 1;
+  string filename = 2;
+  int64 timestamp_ms = 3;
+  string source = 4;
+  bytes data = 5;
+  int64 sequence = 6;
+}
+
+message TrackDetectionProto {
+  double x = 1;
+  double y = 2;
+  double mass = 3;
+  double ecc = 4;
+  double size = 5;
+  double signal = 6;
+}
+
+message FrameMetadata {
+  string filename = 1;
+  int64 sequence = 2;
+  int64 timestamp_ms = 3;
+  string source = 4;
+  int32 image_width = 5;
+  int32 image_height = 6;
+  int32 latency_ms = 7;
+  int32 processing_ms = 8;
+  int32 storage_ms = 9;
+  bool storage_saved = 10;
+  string storage_kind = 11;
+  string storage_path = 12;
+  string storage_codec = 13;
+  double storage_ratio = 14;
+  int64 storage_bytes_in = 15;
+  int64 storage_bytes_out = 16;
+}
+
+message FrameEnvelope {
+  FrameMetadata metadata = 1;
+  bytes image_data = 2;
+  string image_format = 3;
+  repeated TrackDetectionProto detections = 4;
+  int32 detection_count = 5;
+  bool has_tracks = 6;
+  google.protobuf.Struct tracking_config_snapshot = 7;
+}
+
+message StorageConfig {
+  bool enabled = 1;
+  double target_fps = 2;
+  string image_format = 3;
+  string output_dir = 4;
+  bool hdf5_enabled = 5;
+  string hdf5_path = 6;
+  string tiff_compression = 7;
+  int32 tiff_compression_level = 8;
+  int32 png_compression_level = 9;
+  string bit_depth = 10;
+}
+
+service ImageExchange {
+  rpc UploadImage(ImageChunk) returns (UploadAck);
+  rpc GetLatestImage(LatestImageRequest) returns (LatestImageReply);
+  rpc GetLatestTracks(google.protobuf.Empty) returns (google.protobuf.Struct);
+  rpc GetTrackingConfig(google.protobuf.Empty) returns (google.protobuf.Struct);
+  rpc UpdateTrackingConfig(google.protobuf.Struct) returns (google.protobuf.Struct);
+  rpc StreamFrames(google.protobuf.Empty) returns (stream FrameEnvelope);
+  rpc GetStorageConfig(google.protobuf.Empty) returns (StorageConfig);
+  rpc UpdateStorageConfig(StorageConfig) returns (StorageConfig);
+}

@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package due;
+
+enum NullValue {
+  NULL_VALUE = 0;
+}
+
+message VariantList {
+  repeated Variant items = 1;
+}
+
+message VariantStruct {
+  map<string, Variant> fields = 1;
+}
+
+message Variant {
+  oneof kind {
+    bool bool_value = 1;
+    int64 int_value = 2;
+    double double_value = 3;
+    string string_value = 4;
+    bytes bytes_value = 5;
+    VariantList list_value = 6;
+    VariantStruct struct_value = 7;
+    NullValue null_value = 8;
+  }
+}
+
+message StreamRequest {
+  string method = 1;
+  repeated Variant args = 2;
+  map<string, Variant> kwargs = 3;
+  uint64 request_id = 4;
+}
+
+message StreamResponse {
+  Variant result = 1;
+  uint64 request_id = 2;
+  string error = 3;
+}
+
+message TelemetryUpdate {
+  string timestamp = 1;
+  map<string, Variant> measurements = 2;
+}
+
+service DueStreaming {
+  // Bidirectional streaming for commands and responses
+  rpc StreamCommands(stream StreamRequest) returns (stream StreamResponse);
+  
+  // Server-side streaming for telemetry data
+  rpc StreamTelemetry(stream StreamRequest) returns (stream TelemetryUpdate);
+}

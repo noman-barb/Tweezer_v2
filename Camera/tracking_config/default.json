@@ -1,0 +1,21 @@
+{
+  "name": "default",
+  "description": "Default tracking configuration with standard parameters",
+  "diameter": 21,
+  "separation": 18,
+  "percentile": 14.0,
+  "minmass": 100.0,
+  "maxmass": 0.0,
+  "pixel_threshold": 0.0,
+  "preprocess": true,
+  "lshort": 1,
+  "llong": 21,
+  "min_ecc": -1.0,
+  "max_ecc": -1.0,
+  "refine": 1,
+  "tile_width": 512,
+  "tile_height": 512,
+  "tile_overlap": 48,
+  "max_workers": 8,
+  "worker_backend": "auto"
+}

@@ -1,0 +1,93 @@
+global:
+  python_bin: python
+  conda_env: tweezer
+  repo_root: ../
+  log_base_dir: ../logs/service_logs
+  stop_services_on_exit: true
+  slm_config_dir: ../SLM/slm_config
+  tracking_config_dir: ../Camera/tracking_config
+services:
+  arduino_grpc:
+    enabled: true
+    name: Arduino gRPC Server
+    script_path: Hardware/main/arduino.sh
+    python_script: Arduino/rpc/grpc_server_streaming.py
+    cpu_list: 0,1
+    restart_on_exit: true
+    restart_delay: 5
+    log_subdir: arduino_grpc_server
+    args:
+      serial_port: /dev/ttyACM0
+      host: 0.0.0.0
+      port: 50051
+      baud: 2000000
+      timeout: 0.3499999940395355
+      max_workers: 2
+      log_level: INFO
+  image_server:
+    enabled: true
+    name: Image Server with Tracking
+    script_path: Imaging/Acquisition/start_image_server.sh
+    python_script: Camera/ImageServer_with_track.py
+    cpu_list: 2-37
+    restart_on_exit: true
+    restart_delay: 5
+    log_subdir: imaging/acquisition
+    args:
+      host: 0.0.0.0
+      port: 50052
+      max_workers: 8
+      max_message_bytes: 16777216
+      tracker_processes: 32
+      tracker_backend: auto
+      tile_width: 256
+      tile_height: 256
+      tile_overlap: 32
+      track_diameter: 21
+      track_separation: 18
+      track_percentile: 14.0
+      track_minmass: 100.0
+      track_maxmass: 0.0
+      track_pixel_threshold: 0.0
+      track_preprocess: true
+      track_lshort: 1
+      track_llong: 21
+    process_cpu_list: 2-37
+    tracker_cpu_list: 2-33
+    grpc_workers: 4
+  save_compressed:
+    enabled: true
+    name: Save Compressed Images
+    script_path: Imaging/Compression/start_save_compressed.sh
+    python_script: Camera/save_compressed_server.py
+    cpu_list: 38-53
+    restart_on_exit: true
+    restart_delay: 5
+    log_subdir: imaging/save_compressed
+    args:
+      input: /path/to/input/directory
+      output: /path/to/output/directory
+      processes: 16
+      max_images: null
+      stability_seconds: 1.0
+      quality: 100
+      effort: 7
+      decoding_speed: 0
+      verbose: false
+      cpu_affinity: 38-53
+  slm_generator:
+    enabled: true
+    name: SLM Hologram Generator
+    script_path: SLM/start_generator_service.sh
+    python_script: SLM/slm-control-server/generator_service.py
+    cpu_list: '54'
+    restart_on_exit: true
+    restart_delay: 5
+    log_subdir: slm
+    args:
+      bind: 192.168.6.1:50053
+      slm_target: 192.168.6.2:50051
+      fire_and_forget: true
+      width: 1920
+      height: 1152
+      iterations: 50

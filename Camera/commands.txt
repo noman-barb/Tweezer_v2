@@ -1,0 +1,8 @@
+
+# grpc server arduino duo
+# grpc client
+
+taskset --cpu-list 0-36 python  ImageServer_with_track.py --tracker-cpus 0-28 --max-workers 4
+
+taskset --cpu-list 37-50 python save_compressed_server.py --input /mnt/ramdisk/ --output /mnt/external001/temp_noman/ --processes 12  --effort 1
+

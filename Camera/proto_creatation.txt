@@ -1,0 +1,1 @@
+python -m grpc_tools.protoc  -I Camera/proto  --python_out=Camera  --grpc_python_out=Camera  Camera/proto/image_exchange.proto
