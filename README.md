@@ -418,4 +418,4 @@ Use the built-in dashboard to monitor:
 
 ## 📄 License
 
-This project is proprietary software developed for optical tweezer research applications.
+This project is proprietary software developed for integrating, SLM, LASER, CAMERA, MICROSCOPE, etc, required for high speed Holographic Optical Tweezer at @ECFL@IITGN@INDIA; https://chandanmishra.people.iitgn.ac.in/
