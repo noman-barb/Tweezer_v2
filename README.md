@@ -87,7 +87,7 @@ Connect your hardware in this order:
 ```
 1. Arduino Due → USB (Serial communication)
 2. Camera → USB3/GigE (High-speed imaging)
-3. SLM → GPU/Display port (Hologram display)
+3. SLM → Computer port (Hologram display)
 4. Power supplies → DAC outputs (Laser/heater control)
 ```
 

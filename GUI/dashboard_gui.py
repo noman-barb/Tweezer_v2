@@ -73,6 +73,7 @@ HoloAck = Any
 HoloStub = Any
 
 # SLM Config imports
+sys.path.insert(0, str(_REPO_ROOT / "SLM"))
 from slm_config.slm_config_manager import SlmConfigManager, SlmConfig  # type: ignore  # noqa: E402
 
 # Tracking Config imports
@@ -2828,6 +2829,7 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         )
         
         from Camera.main_gui import _rgb_to_dpg_color
+        import sys
         below_color_picker = dpg.add_color_edit(
             label="Below Cutoff",
             default_value=_rgb_to_dpg_color(controller.image_state.cutoff_below_color),

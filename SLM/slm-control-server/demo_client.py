@@ -105,8 +105,8 @@ async def run(target: str, interval: float, points_per_command: int, width: int,
 
 def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Demo client for the hologram generator service")
-    parser.add_argument("--target", default="192.168.6.1:50052", help="Generator service address")
-    parser.add_argument("--interval", type=float, default=0.5, help="Seconds between commands")
+    parser.add_argument("--target", default="192.168.6.1:50053", help="Generator service address")
+    parser.add_argument("--interval", type=float, default=0.03, help="Seconds between commands")
     parser.add_argument("--points", type=int, default=5, help="Number of tweezer points per command")
     parser.add_argument("--width", type=int, default=1920, help="Calibration width in pixels")
     parser.add_argument("--height", type=int, default=1152, help="Calibration height in pixels")
