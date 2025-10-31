@@ -1,366 +1,747 @@
-# Tweezer Services Configuration
+# GUI Module - Unified Control Dashboard# Tweezer Services Configuration
 
-This directory contains scripts and configuration for managing all Tweezer services.
 
-## Overview
 
-The service management system provides:
-- **Centralized Configuration**: All service parameters in one YAML file
-- **GUI Manager**: Modern graphical interface to control all services (RECOMMENDED)
-- **Individual Service Scripts**: Start services independently via shell scripts
-- **Master Launcher**: Start all services at once in separate terminals (Linux only)
-- **Auto-restart**: Services automatically restart on failure
+Centralized control and monitoring interface for the Tweezer system, providing real-time visualization, service lifecycle management, and comprehensive system monitoring through DearPyGUI.This directory contains scripts and configuration for managing all Tweezer services.
+
+
+
+## 📖 Table of Contents## Overview
+
+
+
+- [Architecture Overview](#architecture-overview)The service management system provides:
+
+- [Dashboard Interface](#dashboard-interface)- **Centralized Configuration**: All service parameters in one YAML file
+
+- [Service Manager](#service-manager)- **GUI Manager**: Modern graphical interface to control all services (RECOMMENDED)
+
+- [Configuration Management](#configuration-management)- **Individual Service Scripts**: Start services independently via shell scripts
+
+- [Integration Points](#integration-points)- **Master Launcher**: Start all services at once in separate terminals (Linux only)
+
+- [Usage Guide](#usage-guide)- **Auto-restart**: Services automatically restart on failure
+
 - **CPU Affinity**: Services can be pinned to specific CPU cores
+
+## 🏗️ Architecture Overview
 
 ## Files
 
+The GUI module integrates all system components into a unified control interface. For detailed architecture diagrams and integration flow, see the [main README](../README.md).
+
 - `services_config.yaml` - Main configuration file for all services
-- `services_manager_gui.py` - **GUI application for managing services (RECOMMENDED)**
+
+### Key Components- `services_manager_gui.py` - **GUI application for managing services (RECOMMENDED)**
+
 - `requirements.txt` - Python dependencies for GUI manager
-- `start_all_services.sh` - Launch all enabled services in separate terminals (Linux)
-- `Hardware/main/arduino.sh` - Arduino/Hardware telemetry service
-- `Imaging/Acquisition/start_image_server.sh` - Image acquisition and tracking service
-- `Imaging/Compression/start_save_compressed.sh` - Image compression service
+
+- **Dashboard (`dashboard.py`)**: Unified control interface for all system components- `start_all_services.sh` - Launch all enabled services in separate terminals (Linux)
+
+- **Service Manager (`service_manager.py`)**: Process lifecycle management and monitoring- `Hardware/main/arduino.sh` - Arduino/Hardware telemetry service
+
+- **Configuration (`service_config.yaml`)**: Centralized service configuration- `Imaging/Acquisition/start_image_server.sh` - Image acquisition and tracking service
+
+- **Launch Scripts**: Automated startup utilities- `Imaging/Compression/start_save_compressed.sh` - Image compression service
+
 - `SLM/start_generator_service.sh` - SLM hologram generator service
+
+## 🖥️ Dashboard Interface
 
 ## Quick Start (GUI Manager - RECOMMENDED)
 
+The main dashboard provides real-time control and monitoring:
+
 ### 1. Install Python Dependencies
 
-```bash
-# From the services directory
-pip install -r requirements.txt
-```
+### Features
 
-Or install individually:
 ```bash
-pip install dearpygui pyyaml psutil
-```
 
-### 2. Configure Services
+- **Arduino Hardware Control**# From the services directory
+
+  - DAC output adjustment (laser power, heater control)pip install -r requirements.txt
+
+  - ADC input monitoring (sensor readings)```
+
+  - Digital I/O controls
+
+  - Real-time telemetry streamingOr install individually:
+
+```bash
+
+- **Camera & Tracking**pip install dearpygui pyyaml psutil
+
+  - Live image feed display```
+
+  - Particle tracking overlays
+
+  - Performance metrics### 2. Configure Services
+
+  - Configuration management
 
 Edit `services_config.yaml` and update:
-- `save_compressed.args.input` - Path to TIFF input directory
-- `save_compressed.args.output` - Path to compressed output directory
-- `arduino_grpc.args.serial_port` - Arduino serial port
-- CPU affinity settings for your system
+
+- **SLM Control**- `save_compressed.args.input` - Path to TIFF input directory
+
+  - Tweezer position management- `save_compressed.args.output` - Path to compressed output directory
+
+  - Hologram generation parameters- `arduino_grpc.args.serial_port` - Arduino serial port
+
+  - Pattern presets- CPU affinity settings for your system
+
+  - GPU utilization monitoring
 
 ### 3. Launch GUI Manager
 
-```bash
-python services_manager_gui.py
-```
+- **System Monitoring**
+
+  - CPU and memory usage```bash
+
+  - Service health statuspython services_manager_gui.py
+
+  - Network performance```
+
+  - Disk I/O metrics
 
 Or on Windows:
-```powershell
+
+## 🔧 Service Manager```powershell
+
 python services_manager_gui.py
-```
 
-### 4. Using the GUI
+Comprehensive service lifecycle management with process monitoring.```
 
-The GUI provides:
-- **Service List**: View all configured services with status
-- **Start/Stop/Restart**: Control individual services with buttons
-- **Enable/Disable**: Toggle services on/off via checkboxes
-- **Edit Parameters**: Click "Edit" to modify service configuration
+
+
+### Capabilities### 4. Using the GUI
+
+
+
+- **Process Management**The GUI provides:
+
+  - Start/stop/restart services- **Service List**: View all configured services with status
+
+  - Auto-restart on crash- **Start/Stop/Restart**: Control individual services with buttons
+
+  - Graceful shutdown handling- **Enable/Disable**: Toggle services on/off via checkboxes
+
+  - Process health monitoring- **Edit Parameters**: Click "Edit" to modify service configuration
+
 - **View Logs**: Click "Logs" to see service output
-- **Real-time Monitoring**: CPU and memory usage for running services
-- **Bulk Operations**: Menu options to start/stop all services
 
-#### Editing Service Parameters
+- **Resource Control**- **Real-time Monitoring**: CPU and memory usage for running services
+
+  - CPU affinity assignment- **Bulk Operations**: Menu options to start/stop all services
+
+  - Memory limit enforcement
+
+  - Priority management#### Editing Service Parameters
+
+  - Thread count configuration
 
 1. Click "Edit" button for any service
-2. Modify parameters in the edit window
-3. Click "Save & Apply"
-4. If service is running, you'll be prompted to restart it
 
-## Requirements
+- **Logging & Monitoring**2. Modify parameters in the edit window
 
-### Python Dependencies (GUI Manager)
+  - Real-time log viewing3. Click "Save & Apply"
 
-Install via `requirements.txt`:
+  - Performance metrics4. If service is running, you'll be prompted to restart it
+
+  - Error tracking
+
+  - Resource usage history## Requirements
+
+
+
+## ⚙️ Configuration Management### Python Dependencies (GUI Manager)
+
+
+
+### Service Configuration (`service_config.yaml`)Install via `requirements.txt`:
+
 ```bash
-pip install -r requirements.txt
-```
 
-Or individually:
-- **dearpygui** - Modern GUI framework
-- **pyyaml** - YAML configuration parsing
-- **psutil** - Process and system monitoring
+```yamlpip install -r requirements.txt
 
-### System Dependencies (Shell Scripts)
+global:```
 
-1. **yq** - YAML parser for bash scripts (Linux only)
-   ```bash
-   # Ubuntu/Debian
-   sudo apt-get install yq
-   
-   # Or using pip
-   pip install yq
-   
-   # Or using snap
-   sudo snap install yq
-   ```
+  python_bin: python
 
-2. **Terminal Emulator** (for `start_all_services.sh` on Linux)
-   - gnome-terminal (recommended)
-   - xterm
-   - konsole
-   - xfce4-terminal
+  conda_env: tweezerOr individually:
 
-3. **taskset** - CPU affinity control (Linux - usually pre-installed)
+  repo_root: ../- **dearpygui** - Modern GUI framework
 
-## Configuration
+  log_base_dir: ../logs/service_logs- **pyyaml** - YAML configuration parsing
 
-Edit `services_config.yaml` to configure all services. The file contains:
+  stop_services_on_exit: true- **psutil** - Process and system monitoring
+
+
+
+services:### System Dependencies (Shell Scripts)
+
+  arduino_grpc:
+
+    enabled: true1. **yq** - YAML parser for bash scripts (Linux only)
+
+    name: Arduino gRPC Server   ```bash
+
+    python_script: Arduino/rpc/grpc_server_streaming.py   # Ubuntu/Debian
+
+    cpu_list: 0,1   sudo apt-get install yq
+
+    restart_on_exit: true   
+
+    restart_delay: 5   # Or using pip
+
+    args:   pip install yq
+
+      serial_port: /dev/ttyACM0  # Windows: COM3   
+
+      host: 0.0.0.0   # Or using snap
+
+      port: 50051   sudo snap install yq
+
+      baud: 2000000   ```
+
+
+
+  image_server:2. **Terminal Emulator** (for `start_all_services.sh` on Linux)
+
+    enabled: true   - gnome-terminal (recommended)
+
+    name: Image Server with Tracking   - xterm
+
+    python_script: Camera/ImageServer_with_track.py   - konsole
+
+    cpu_list: 2-37   - xfce4-terminal
+
+    restart_on_exit: true
+
+    args:3. **taskset** - CPU affinity control (Linux - usually pre-installed)
+
+      host: 0.0.0.0
+
+      port: 50052## Configuration
+
+      tracker_processes: 32
+
+      tile_width: 256Edit `services_config.yaml` to configure all services. The file contains:
+
+      track_diameter: 21
 
 ### Global Settings
-```yaml
-global:
-  python_bin: python3           # Python interpreter to use
-  repo_root: "../../"           # Path to repository root
-  log_base_dir: "../../logs/service_logs"  # Base directory for logs
-```
 
-### Service Definitions
+  slm_generator:```yaml
 
-Each service has the following structure:
+    enabled: trueglobal:
+
+    name: SLM Hologram Generator  python_bin: python3           # Python interpreter to use
+
+    python_script: SLM/slm-control-server/generator_service.py  repo_root: "../../"           # Path to repository root
+
+    cpu_list: 38,39  log_base_dir: "../../logs/service_logs"  # Base directory for logs
+
+    args:```
+
+      host: 0.0.0.0
+
+      port: 50053### Service Definitions
+
+      gpu_index: 0
+
+```Each service has the following structure:
+
 ```yaml
-services:
+
+### Configuration Optionsservices:
+
   service_name:
-    enabled: true               # Enable/disable the service
-    name: "Display Name"        # Human-readable name
-    script_path: "path/to/script.sh"  # Relative to services directory (for shell scripts)
-    python_script: "path/to/script.py"  # Relative to repo root
-    cpu_list: "0,1"             # CPU cores to pin to
-    restart_on_exit: true       # Auto-restart on failure
-    restart_delay: 5            # Seconds to wait before restart
-    log_subdir: "service_logs"  # Log subdirectory
-    args:                       # Python script arguments
+
+| Parameter | Description | Default |    enabled: true               # Enable/disable the service
+
+|-----------|-------------|---------|    name: "Display Name"        # Human-readable name
+
+| `enabled` | Service auto-start | true |    script_path: "path/to/script.sh"  # Relative to services directory (for shell scripts)
+
+| `python_script` | Script path relative to repo | Required |    python_script: "path/to/script.py"  # Relative to repo root
+
+| `cpu_list` | CPU affinity (cores or ranges) | All cores |    cpu_list: "0,1"             # CPU cores to pin to
+
+| `restart_on_exit` | Auto-restart on crash | false |    restart_on_exit: true       # Auto-restart on failure
+
+| `restart_delay` | Seconds before restart | 5 |    restart_delay: 5            # Seconds to wait before restart
+
+| `log_subdir` | Log subdirectory | service name |    log_subdir: "service_logs"  # Log subdirectory
+
+| `args` | Service-specific arguments | {} |    args:                       # Python script arguments
+
       host: "0.0.0.0"
-      port: 50052
+
+## 🔗 Integration Points      port: 50052
+
       # ... other arguments
-```
 
-### Important Notes
+### Client Integration```
 
-1. **Update Required Paths**: Before running services, update these paths in `services_config.yaml`:
-   - `save_compressed.args.input` - Input directory for TIFF images
-   - `save_compressed.args.output` - Output directory for compressed images
 
-2. **CPU Affinity**: Adjust CPU core assignments based on your system:
+
+The dashboard integrates with all system services via gRPC:### Important Notes
+
+
+
+```python1. **Update Required Paths**: Before running services, update these paths in `services_config.yaml`:
+
+# Arduino integration   - `save_compressed.args.input` - Input directory for TIFF images
+
+from Arduino.rpc.grpc_client_streaming import DueStreamingClient   - `save_compressed.args.output` - Output directory for compressed images
+
+arduino_client = DueStreamingClient("localhost:50051")
+
+arduino_client.connect()2. **CPU Affinity**: Adjust CPU core assignments based on your system:
+
    - Arduino: `cpu_list: "0,1"`
-   - Image Server: `process_cpu_list: "2-37"`, `tracker_cpu_list: "2-33"`
-   - Save Compressed: `cpu_list: "38-53"`
-   - SLM Generator: `cpu_list: "54"`
 
-3. **Serial Port**: Update `arduino_grpc.args.serial_port` if your Arduino is on a different port
+# Camera integration   - Image Server: `process_cpu_list: "2-37"`, `tracker_cpu_list: "2-33"`
 
-4. **Network Addresses**: Update network addresses for SLM services if needed:
-   - `slm_generator.args.bind` - Address for clients to connect
+from Camera.main_gui import ImageClient   - Save Compressed: `cpu_list: "38-53"`
+
+camera_client = ImageClient("localhost:50052")   - SLM Generator: `cpu_list: "54"`
+
+
+
+# SLM integration3. **Serial Port**: Update `arduino_grpc.args.serial_port` if your Arduino is on a different port
+
+import hologram_pb2_grpc
+
+slm_stub = hologram_pb2_grpc.ControlServiceStub(channel)4. **Network Addresses**: Update network addresses for SLM services if needed:
+
+```   - `slm_generator.args.bind` - Address for clients to connect
+
    - `slm_generator.args.slm_target` - SLM hardware service address
+
+### Data Flow
 
 ## Usage with GUI Manager (RECOMMENDED)
 
-The GUI manager provides the easiest way to control services:
+1. **User Input** → GUI event callback
 
-```bash
-# Start the GUI
-python services_manager_gui.py
+2. **Validation** → Parameter checkingThe GUI manager provides the easiest way to control services:
 
-# Or specify custom config file
+3. **Client Call** → gRPC request
+
+4. **Service Processing** → Hardware command```bash
+
+5. **Response** → Status update# Start the GUI
+
+6. **UI Update** → Visual feedbackpython services_manager_gui.py
+
+
+
+## 📚 Usage Guide# Or specify custom config file
+
 python services_manager_gui.py /path/to/config.yaml
-```
 
-### GUI Features
+### Starting the Dashboard```
 
-- **Service Control**: Start, stop, restart any service with a single click
+
+
+```bash### GUI Features
+
+# Activate environment
+
+conda activate tweezer- **Service Control**: Start, stop, restart any service with a single click
+
 - **Live Status**: See real-time CPU and memory usage
-- **Parameter Editing**: Modify service configuration without editing YAML
-- **Log Viewer**: View recent log entries for each service
+
+# Launch unified dashboard- **Parameter Editing**: Modify service configuration without editing YAML
+
+python GUI/dashboard.py- **Log Viewer**: View recent log entries for each service
+
 - **Enable/Disable**: Toggle services without removing configuration
-- **Bulk Operations**: Start/stop all services from the menu
-- **Auto-refresh**: Status updates automatically every second
-- **Cross-platform**: Works on Windows, Linux, and macOS
 
-## Usage with Shell Scripts (Linux Only)
+# With custom configuration- **Bulk Operations**: Start/stop all services from the menu
 
-### Starting All Services
+python GUI/dashboard.py --config custom_config.yaml- **Auto-refresh**: Status updates automatically every second
 
-Launch all enabled services in separate terminals:
+```- **Cross-platform**: Works on Windows, Linux, and macOS
+
+
+
+### Launching Service Manager## Usage with Shell Scripts (Linux Only)
+
+
+
+```bash### Starting All Services
+
+# Start service manager
+
+python GUI/service_manager.pyLaunch all enabled services in separate terminals:
+
 ```bash
-cd services
-./start_all_services.sh
+
+# Auto-start all servicescd services
+
+python GUI/service_manager.py --auto-start./start_all_services.sh
+
 ```
 
-Each service will run in its own terminal window with:
-- Color-coded output
+# Load custom configuration
+
+python GUI/service_manager.py --config services.yamlEach service will run in its own terminal window with:
+
+```- Color-coded output
+
 - Auto-restart on failure
-- Logs saved to configured directories
 
-### Starting Individual Services
+### Command Line Options- Logs saved to configured directories
 
-Run a single service:
+
+
+**Dashboard:**### Starting Individual Services
+
 ```bash
-# Arduino/Hardware service
-./Hardware/main/arduino.sh
 
-# Image acquisition service
-./Imaging/Acquisition/start_image_server.sh
+python GUI/dashboard.py \Run a single service:
 
-# Image compression service
-./Imaging/Compression/start_save_compressed.sh
+    --arduino-host localhost:50051 \```bash
 
-# SLM hologram generator
-./SLM/start_generator_service.sh
-```
+    --camera-host localhost:50052 \# Arduino/Hardware service
 
-### Stopping Services
+    --slm-host localhost:50053 \./Hardware/main/arduino.sh
 
-- To stop a service: Press `Ctrl+C` in its terminal window
+    --log-level DEBUG \
+
+    --fullscreen# Image acquisition service
+
+```./Imaging/Acquisition/start_image_server.sh
+
+
+
+**Service Manager:**# Image compression service
+
+```bash./Imaging/Compression/start_save_compressed.sh
+
+python GUI/service_manager.py \
+
+    --config service_config.yaml \# SLM hologram generator
+
+    --log-dir ./logs \./SLM/start_generator_service.sh
+
+    --auto-start \```
+
+    --stop-on-exit
+
+```### Stopping Services
+
+
+
+### Programmatic Control- To stop a service: Press `Ctrl+C` in its terminal window
+
 - To stop all services: Close all terminal windows or press `Ctrl+C` in each
 
-### Overriding Configuration
+```python
+
+from GUI.service_manager import ServicesManager### Overriding Configuration
+
+from pathlib import Path
 
 You can override settings via environment variables:
-```bash
-# Use a different config file
-CONFIG_FILE=/path/to/custom_config.yaml ./start_all_services.sh
 
-# Override CPU affinity for a specific service
-CPU_LIST="4-7" ./Hardware/main/arduino.sh
+# Initialize manager```bash
+
+manager = ServicesManager(Path("GUI/service_config.yaml"))# Use a different config file
+
+manager.load_config()CONFIG_FILE=/path/to/custom_config.yaml ./start_all_services.sh
+
+
+
+# Start services# Override CPU affinity for a specific service
+
+manager.start_service("arduino_grpc")CPU_LIST="4-7" ./Hardware/main/arduino.sh
+
+manager.start_service("image_server")
 
 # Override Python interpreter
-PYTHON_BIN=/path/to/python3 ./start_all_services.sh
-```
+
+# Monitor statusPYTHON_BIN=/path/to/python3 ./start_all_services.sh
+
+status = manager.get_service_status("arduino_grpc")```
+
+print(f"Status: {status['status']}, PID: {status['pid']}")
 
 ### Passing Additional Arguments
 
-All scripts accept additional command-line arguments:
-```bash
-# Override port for Arduino service
-./Hardware/main/arduino.sh --port 50053
+# Graceful shutdown
 
-# Override tracking parameters for image server
+manager.stop_all_services()All scripts accept additional command-line arguments:
+
+``````bash
+
+# Override port for Arduino service
+
+## 🎨 Customization./Hardware/main/arduino.sh --port 50053
+
+
+
+### UI Themes# Override tracking parameters for image server
+
 ./Imaging/Acquisition/start_image_server.sh --track-diameter 25 --track-separation 20
 
+The dashboard supports custom DearPyGUI themes:
+
 # Add verbose logging to compression service
-./Imaging/Compression/start_save_compressed.sh --verbose
-```
 
-## Logs
+```python./Imaging/Compression/start_save_compressed.sh --verbose
 
-Logs are stored in subdirectories under the configured `log_base_dir`:
-```
-logs/service_logs/
-├── arduino_grpc_server/
+import dearpygui.dearpygui as dpg```
+
+
+
+with dpg.theme() as custom_theme:## Logs
+
+    with dpg.theme_component(dpg.mvAll):
+
+        dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (20, 20, 20))Logs are stored in subdirectories under the configured `log_base_dir`:
+
+        dpg.add_theme_color(dpg.mvThemeCol_Button, (70, 70, 180))```
+
+        dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 5)logs/service_logs/
+
+```├── arduino_grpc_server/
+
 │   └── arduino_grpc_server_20251026_143022.log
-├── imaging/
+
+### Layout Configuration├── imaging/
+
 │   ├── acquisition/
-│   │   └── image_server_with_track_20251026_143023.log
-│   └── save_compressed/
-│       └── save_compressed_server.log
-└── slm/
+
+- Floating/dockable windows│   │   └── image_server_with_track_20251026_143023.log
+
+- Multi-monitor support│   └── save_compressed/
+
+- Saved layouts│       └── save_compressed_server.log
+
+- Customizable panels└── slm/
+
     └── slm_generator_service_20251026_143024.log
-```
 
-## Disabling Services
+## 🐛 Troubleshooting```
 
-To disable a service without removing its configuration:
-```yaml
-services:
-  service_name:
+
+
+### Common Issues## Disabling Services
+
+
+
+**Service Won't Start**To disable a service without removing its configuration:
+
+```bash```yaml
+
+# Check configurationservices:
+
+python GUI/service_manager.py --validate  service_name:
+
     enabled: false  # Service will be skipped
-    # ... rest of config
-```
 
-## Troubleshooting
+# Test service manually    # ... rest of config
 
-### Service Won't Start
+python Arduino/rpc/grpc_server_streaming.py --port 50051```
 
-1. Check if the service is enabled in `services_config.yaml`
-2. Verify paths in the config file are correct
-3. Check log files for error messages
-4. Ensure required dependencies are installed
+
+
+# Check logs## Troubleshooting
+
+tail -f logs/service_logs/arduino_grpc_server/service.log
+
+```### Service Won't Start
+
+
+
+**GUI Not Responding**1. Check if the service is enabled in `services_config.yaml`
+
+- Verify DearPyGUI installation: `pip show dearpygui`2. Verify paths in the config file are correct
+
+- Check graphics driver compatibility3. Check log files for error messages
+
+- Monitor CPU usage4. Ensure required dependencies are installed
+
+- Review event loop
 
 ### yq Not Found
 
-Install yq using one of the methods in Requirements section.
+**Connection Errors**
 
-### Permission Denied
+```bashInstall yq using one of the methods in Requirements section.
 
-Make scripts executable:
-```bash
+# Test gRPC connectivity
+
+grpcurl -plaintext localhost:50051 list### Permission Denied
+
+
+
+# Check port availabilityMake scripts executable:
+
+netstat -tuln | grep 5005```bash
+
 chmod +x start_all_services.sh
-chmod +x Hardware/main/arduino.sh
-chmod +x Imaging/Acquisition/start_image_server.sh
-chmod +x Imaging/Compression/start_save_compressed.sh
-chmod +x SLM/start_generator_service.sh
-```
 
-### Terminal Emulator Not Found
+# Verify firewall settingschmod +x Hardware/main/arduino.sh
+
+```chmod +x Imaging/Acquisition/start_image_server.sh
+
+chmod +x Imaging/Compression/start_save_compressed.sh
+
+**Performance Issues**chmod +x SLM/start_generator_service.sh
+
+- Reduce telemetry update frequency```
+
+- Lower plot refresh rates
+
+- Check CPU affinity settings### Terminal Emulator Not Found
+
+- Monitor memory usage
 
 Install a supported terminal emulator:
-```bash
+
+### Debug Mode```bash
+
 # Ubuntu/Debian
-sudo apt-get install gnome-terminal
+
+Enable detailed logging:sudo apt-get install gnome-terminal
+
 ```
 
-### CPU Affinity Errors
+```bash
+
+# Dashboard debug mode### CPU Affinity Errors
+
+python GUI/dashboard.py --log-level DEBUG --verbose
 
 - Verify CPU core numbers match your system: `lscpu`
-- Adjust CPU ranges in `services_config.yaml`
-- Ensure taskset is available: `which taskset`
+
+# Service manager debug- Adjust CPU ranges in `services_config.yaml`
+
+python GUI/service_manager.py --debug- Ensure taskset is available: `which taskset`
+
+```
 
 ## Development
 
+## 📊 Performance Tuning
+
 ### Adding a New Service
 
+### Optimization Tips
+
 1. Create the service script in the appropriate subdirectory
-2. Add service configuration to `services_config.yaml`:
-   ```yaml
-   services:
-     new_service:
-       enabled: true
+
+1. **CPU Affinity**: Assign dedicated cores to services2. Add service configuration to `services_config.yaml`:
+
+2. **Update Rates**: Balance responsiveness vs CPU usage   ```yaml
+
+3. **Buffer Sizes**: Optimize for your data rates   services:
+
+4. **Thread Pools**: Match to CPU core count     new_service:
+
+5. **Network Settings**: Adjust gRPC message sizes       enabled: true
+
        name: "New Service"
-       script_path: "path/to/new_service.sh"
+
+### Resource Allocation       script_path: "path/to/new_service.sh"
+
        python_script: "path/to/script.py"
-       cpu_list: "0"
-       restart_on_exit: true
-       restart_delay: 5
-       log_subdir: "new_service"
-       args:
-         # Service-specific arguments
-   ```
-3. The service will be automatically picked up by `start_all_services.sh`
 
-### Modifying Service Parameters
+```yaml       cpu_list: "0"
 
-1. Edit `services_config.yaml`
-2. Restart affected services
-3. No need to modify shell scripts unless adding new parameter types
+# High-performance configuration       restart_on_exit: true
 
-## Examples
+services:       restart_delay: 5
 
-### Start only Arduino and Image services
+  image_server:       log_subdir: "new_service"
+
+    cpu_list: 2-37          # Dedicated cores for tracking       args:
+
+    args:         # Service-specific arguments
+
+      tracker_processes: 32  # Match available cores   ```
+
+      max_workers: 8        # gRPC worker threads3. The service will be automatically picked up by `start_all_services.sh`
+
+      
+
+  slm_generator:### Modifying Service Parameters
+
+    cpu_list: 38,39         # Dedicated cores for GPU ops
+
+    args:1. Edit `services_config.yaml`
+
+      gpu_index: 0          # Use dedicated GPU2. Restart affected services
+
+```3. No need to modify shell scripts unless adding new parameter types
+
+
+
+## 📄 File Structure## Examples
+
+
+
+```### Start only Arduino and Image services
+
+GUI/```bash
+
+├── dashboard.py              # Main unified dashboard# In services_config.yaml, set:
+
+├── service_manager.py        # Service lifecycle manager# save_compressed.enabled: false
+
+├── service_config.yaml       # Service configuration# slm_generator.enabled: false
+
+├── TWEEZE.sh                 # Linux launch script
+
+└── README.md                 # This documentation./start_all_services.sh
+
+``````
+
+
+
+## 🔐 Security Considerations### Run Image Server on different port
+
 ```bash
-# In services_config.yaml, set:
-# save_compressed.enabled: false
-# slm_generator.enabled: false
 
-./start_all_services.sh
+- Services listen on `0.0.0.0` by default (all interfaces)# Edit services_config.yaml:
+
+- Consider using `localhost` or specific IPs for security# image_server.args.port: 50055
+
+- No authentication implemented (trusted local network only)
+
+- Log files may contain sensitive operational data# Or override on command line:
+
+- Secure file permissions for configuration files./Imaging/Acquisition/start_image_server.sh --port 50055
+
 ```
 
-### Run Image Server on different port
-```bash
-# Edit services_config.yaml:
-# image_server.args.port: 50055
-
-# Or override on command line:
-./Imaging/Acquisition/start_image_server.sh --port 50055
-```
+## 🚀 Best Practices
 
 ### Custom CPU affinity for compression
-```bash
-CPU_LIST="40-50" ./Imaging/Compression/start_save_compressed.sh
-```
+
+1. **Always use the service manager** for production deployments```bash
+
+2. **Enable auto-restart** for critical servicesCPU_LIST="40-50" ./Imaging/Compression/start_save_compressed.sh
+
+3. **Monitor resource usage** regularly```
+
+4. **Keep configuration under version control**
+5. **Review logs** for warnings and errors
+6. **Test configuration changes** before production use
+7. **Document custom modifications**
+8. **Backup configurations** before updates
+
+## 📚 Additional Resources
+
+- [Main System Documentation](../README.md)
+- [Arduino Module](../Arduino/README.md)
+- [Camera Module](../Camera/README.md)
+- [SLM Module](../SLM/README.md)
+- [DearPyGUI Documentation](https://dearpygui.readthedocs.io/)
+
+The GUI module provides comprehensive system control and monitoring, enabling efficient operation of the Tweezer experimental setup through an intuitive, real-time interface.
