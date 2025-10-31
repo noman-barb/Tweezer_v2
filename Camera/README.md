@@ -1,18 +1,151 @@
 # Camera Module - Real-Time Particle Tracking System
 
-High-performance image acquisition and particle tracking system with TrackPy integration, gRPC streaming, and HDF5 data storage. Supports real-time analysis of optical tweezer experiments with sub-pixel accuracy.
+High-performance image acquisition and particle tracking system with TrackPy integration, gRPC streaming, and HDF5 data storage. The system operates across two PCs connected via 10 Gigabit Ethernet for optimal performance.
 
 ## 📖 Table of Contents
 
 - [Architecture Overview](#architecture-overview)
+- [Hardware Topology](#hardware-topology)
 - [Tracking Pipeline](#tracking-pipeline)
 - [Image Server](#image-server)
-- [GUI Dashboard](#gui-dashboard)
+- [Image Watcher](#image-watcher)
+- [Save Compressed Server](#save-compressed-server)
 - [Data Storage](#data-storage)
 - [Performance Optimization](#performance-optimization)
 - [API Reference](#api-reference)
 
 ## 🏗️ Architecture Overview
+
+The Camera module operates in a **distributed architecture across two PCs**:
+
+- **Camera PC**: Hamamatsu camera acquisition, RAMdisk storage, ImageWatcher, and save_compressed_server
+- **Main Control PC**: ImageServer_with_track.py receives images via 10G LAN and performs TrackPy tracking
+
+## 🖧 Hardware Topology
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    CAMERA MODULE HARDWARE TOPOLOGY                             │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────────────┤
+│  │                         CAMERA PC                                          │
+│  │                                                                             │
+│  │  ┌─────────────┐                                                            │
+│  │  │  Hamamatsu  │                                                            │
+│  │  │   Camera    │ Connected directly to Camera PC                            │
+│  │  │   Hardware  │                                                            │
+│  │  └──────┬──────┘                                                            │
+│  │         │                                                                   │
+│  │         ▼                                                                   │
+│  │  ┌─────────────────────────────────────────────────────────────────┐        │
+│  │  │          Hamamatsu Camera Software                             │        │
+│  │  │          (dumps images to RAMdisk)                             │        │
+│  │  └──────────────────────┬─────────────────────────────────────────┘        │
+│  │                         │                                                  │
+│  │                         ▼                                                  │
+│  │  ┌─────────────────────────────────────────────────────────────────┐        │
+│  │  │                    RAMdisk (TIFF Storage)                      │        │
+│  │  │                                                                 │        │
+│  │  │  - Temporary high-speed storage                                │        │
+│  │  │  - TIFF images written by camera software                      │        │
+│  │  │  - Watched by ImageWatcher and save_compressed_server          │        │
+│  │  └────────────────┬────────────────────────┬───────────────────────┘        │
+│  │                   │                        │                               │
+│  │                   ▼                        ▼                               │
+│  │  ┌─────────────────────────┐    ┌─────────────────────────┐               │
+│  │  │    ImageWatcher.py      │    │ save_compressed_server  │               │
+│  │  │                         │    │        .py              │               │
+│  │  │ - Monitors RAMdisk      │    │                         │               │
+│  │  │ - Detects new TIFFs     │    │ - Monitors RAMdisk      │               │
+│  │  │ - Sends to Main PC      │    │ - Converts TIFF→JPEG-XL │               │
+│  │  │ - gRPC streaming        │    │ - Lossless compression  │               │
+│  │  │   (10G LAN)             │    │ - Saves to permanent    │               │
+│  │  │                         │    │   storage               │               │
+│  │  └───────┬─────────────────┘    └────────┬────────────────┘               │
+│  │          │                               │                                │
+│  └──────────┼───────────────────────────────┼────────────────────────────────┤
+│             │                               │                                │
+│             │ 10 Gigabit                    ▼                                │
+│             │ Ethernet              ┌─────────────────┐                      │
+│             │                       │   Permanent     │                      │
+│             │                       │    Storage      │                      │
+│             │                       │  (JPEG-XL)      │                      │
+│             │                       └─────────────────┘                      │
+│  ═══════════╪═══════════════════════════════════════════════════════════════ │
+│             │                                                                │
+│  ┌──────────▼────────────────────────────────────────────────────────────────┤
+│  │                      MAIN CONTROL PC                                      │
+│  │                                                                            │
+│  │  ┌─────────────────────────────────────────────────────────────────┐      │
+│  │  │         ImageServer_with_track.py (Port 50052)                 │      │
+│  │  │                                                                 │      │
+│  │  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐ │      │
+│  │  │  │   gRPC      │    │   Tile      │    │   TrackPy Engine   │ │      │
+│  │  │  │   Server    │───▶│  Processing │───▶│   (32 processes)    │ │      │
+│  │  │  │             │    │  256x256    │    │                     │ │      │
+│  │  │  │  Receives   │    │  +32px      │    │  - Particle detect  │ │      │
+│  │  │  │  images     │    │  overlap    │    │  - Sub-pixel track  │ │      │
+│  │  │  │  from       │    │             │    │  - Real-time        │ │      │
+│  │  │  │  Camera PC  │    └─────────────┘    └─────────────────────┘ │      │
+│  │  │  └─────────────┘                                                │      │
+│  │  │         │                                                       │      │
+│  │  │         ▼                                                       │      │
+│  │  │  ┌─────────────────────────────────────────────────────┐       │      │
+│  │  │  │         Results distributed to:                     │       │      │
+│  │  │  │  - Dashboard GUI (live display)                     │       │      │
+│  │  │  │  - SLM control (feedback loop)                      │       │      │
+│  │  │  │  - HDF5 storage (data logging)                      │       │      │
+│  │  │  └─────────────────────────────────────────────────────┘       │      │
+│  │  └─────────────────────────────────────────────────────────────────┘      │
+│  └───────────────────────────────────────────────────────────────────────────┘
+│                                                                                │
+│  Data Flow Summary:                                                           │
+│  1. Camera → RAMdisk (TIFF) [Camera PC]                                       │
+│  2. RAMdisk → ImageWatcher → Main PC Image Server (10G LAN)                   │
+│  3. Image Server → TrackPy → Results to Dashboard/SLM [Main PC]               │
+│  4. RAMdisk → save_compressed_server → Permanent Storage (JPEG-XL) [Camera PC]│
+│                                                                                │
+│  When dashboard "save" is pressed:                                            │
+│  - Camera software starts dumping TIFFs to RAMdisk                            │
+│  - ImageWatcher sends images to Main PC for tracking                          │
+│  - save_compressed_server converts TIFFs to lossless JPEG-XL in background    │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## 🔬 Component Details
+
+### ImageWatcher.py (Camera PC)
+**Location**: Runs on Camera PC
+**Purpose**: Monitors RAMdisk for new TIFF files and streams them to Main PC
+
+- Watches RAMdisk directory for new `.tif`/`.tiff` files
+- Sends images via gRPC to ImageServer on Main PC (10G LAN)
+- Handles network disconnections and reconnection
+- Supports both polling and event-driven (watchdog) modes
+- Can optionally delete images after successful upload
+
+### ImageServer_with_track.py (Main Control PC)
+**Location**: Runs on Main Control PC
+**Purpose**: Receives images and performs real-time particle tracking
+
+- gRPC server on port 50052
+- Receives images from ImageWatcher (Camera PC)
+- Tile-based TrackPy processing (32 processes)
+- 256x256 tiles with 32px overlap
+- Sub-pixel particle localization
+- Results streamed to dashboard and SLM control
+
+### save_compressed_server.py (Camera PC)
+**Location**: Runs on Camera PC
+**Purpose**: Converts TIFF images to lossless JPEG-XL for permanent storage
+
+- Monitors same RAMdisk as ImageWatcher
+- Converts TIFF → JPEG-XL (lossless, high compression)
+- Multi-process compression (16 workers)
+- Quality 100, effort 7 for best lossless compression
+- Saves to permanent storage location
+- Runs continuously in background
 
 The Camera module implements a multi-threaded, tile-based tracking architecture for high-performance particle detection:
 

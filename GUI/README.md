@@ -1,116 +1,210 @@
-# GUI Module - Unified Control Dashboard# Tweezer Services Configuration
+# GUI Module - Unified Control Dashboard
 
+Centralized control and monitoring interface for the distributed Tweezer system, providing real-time visualization, service lifecycle management, and comprehensive system monitoring through DearPyGUI across multiple PCs connected via 10 Gigabit Ethernet.
 
+## 📖 Table of Contents
 
-Centralized control and monitoring interface for the Tweezer system, providing real-time visualization, service lifecycle management, and comprehensive system monitoring through DearPyGUI.This directory contains scripts and configuration for managing all Tweezer services.
-
-
-
-## 📖 Table of Contents## Overview
-
-
-
-- [Architecture Overview](#architecture-overview)The service management system provides:
-
-- [Dashboard Interface](#dashboard-interface)- **Centralized Configuration**: All service parameters in one YAML file
-
-- [Service Manager](#service-manager)- **GUI Manager**: Modern graphical interface to control all services (RECOMMENDED)
-
-- [Configuration Management](#configuration-management)- **Individual Service Scripts**: Start services independently via shell scripts
-
-- [Integration Points](#integration-points)- **Master Launcher**: Start all services at once in separate terminals (Linux only)
-
-- [Usage Guide](#usage-guide)- **Auto-restart**: Services automatically restart on failure
-
-- **CPU Affinity**: Services can be pinned to specific CPU cores
+- [Architecture Overview](#architecture-overview)
+- [Distributed System Topology](#distributed-system-topology)
+- [Dashboard Interface](#dashboard-interface)
+- [Service Manager](#service-manager)
+- [Configuration Management](#configuration-management)
+- [Usage Guide](#usage-guide)
 
 ## 🏗️ Architecture Overview
 
-## Files
+The GUI module runs on the **Main Control PC** and provides centralized management for the entire distributed Tweezer system across three PCs:
 
-The GUI module integrates all system components into a unified control interface. For detailed architecture diagrams and integration flow, see the [main README](../README.md).
+1. **Main Control PC**: Arduino control, image tracking, SLM hologram generation
+2. **Camera PC**: Hamamatsu camera, RAMdisk, ImageWatcher, save_compressed_server  
+3. **SLM PC**: SLM hardware driver (PCIE connection)
 
-- `services_config.yaml` - Main configuration file for all services
+All PCs communicate via 10 Gigabit Ethernet for low-latency gRPC communication.
 
-### Key Components- `services_manager_gui.py` - **GUI application for managing services (RECOMMENDED)**
+## 🖧 Distributed System Topology
 
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│            GUI MODULE - DISTRIBUTED SYSTEM CONTROL TOPOLOGY                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────────────┤
+│  │                         MAIN CONTROL PC                                    │
+│  │                                                                             │
+│  │  ┌─────────────────────────────────────────────────────────────────┐        │
+│  │  │          services_manager_gui.py (Dashboard)                   │        │
+│  │  │                                                                 │        │
+│  │  │  Centralized control interface for all services:               │        │
+│  │  │  - Start/Stop services across all PCs                          │        │
+│  │  │  - Monitor service health and performance                      │        │
+│  │  │  - View logs in real-time                                      │        │
+│  │  │  - Edit service parameters                                     │        │
+│  │  │  - Network monitoring (10G LAN)                                │        │
+│  │  └─────────────────────────────────────────────────────────────────┘        │
+│  │         │                                                                   │
+│  │         ├─────────────────┬────────────────────┐                            │
+│  │         │                 │                    │                            │
+│  │         ▼                 ▼                    ▼                            │
+│  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                     │
+│  │  │  Arduino    │    │   Image     │    │    SLM      │                     │
+│  │  │   gRPC      │    │   Tracker   │    │  Generator  │                     │
+│  │  │  :50051     │    │   :50052    │    │   :50053    │                     │
+│  │  └──────┬──────┘    └──────▲──────┘    └──────┬──────┘                     │
+│  │         │                  │                   │                            │
+│  │    USB Serial              │ 10G LAN           │ 10G LAN                    │
+│  │         ▼                  │                   │                            │
+│  │  ┌─────────────┐           │                   │                            │
+│  │  │  Arduino    │           │                   │                            │
+│  │  │    Due      │           │                   │                            │
+│  │  │             │           │                   │                            │
+│  │  │ - Laser     │           │                   │                            │
+│  │  │ - Heater    │           │                   │                            │
+│  │  │ - SHT3      │           │                   │                            │
+│  │  └─────────────┘           │                   │                            │
+│  └────────────────────────────┼───────────────────┼────────────────────────────┤
+│                                │                   │                            │
+│  ══════════════════════════════╪═══════════════════╪════════════════════════════│
+│                                │                   │                            │
+│  ┌─────────────────────────────┼───────────────────┼────────────────────────────┤
+│  │                    CAMERA PC│                   │                            │
+│  │                             │                   │                            │
+│  │  Services managed by GUI:   │                   │                            │
+│  │                             │                   │                            │
+│  │  ┌─────────────────┐        │                   │                            │
+│  │  │  ImageWatcher   │────────┘                   │                            │
+│  │  │       .py       │                            │                            │
+│  │  │  - RAMdisk      │                            │                            │
+│  │  │  - Send to Main │                            │                            │
+│  │  │    PC :50052    │                            │                            │
+│  │  └─────────────────┘                            │                            │
+│  │                                                  │                            │
+│  │  ┌──────────────────────┐                       │                            │
+│  │  │ save_compressed      │                       │                            │
+│  │  │      _server.py      │                       │                            │
+│  │  │  - TIFF → JPEG-XL    │                       │                            │
+│  │  │  - RAMdisk watch     │                       │                            │
+│  │  │  - Perm storage      │                       │                            │
+│  │  └──────────────────────┘                       │                            │
+│  │                                                  │                            │
+│  │  ┌──────────────────────┐                       │                            │
+│  │  │  Hamamatsu Camera    │                       │                            │
+│  │  │  → RAMdisk (TIFF)    │                       │                            │
+│  │  └──────────────────────┘                       │                            │
+│  └──────────────────────────────────────────────────┼────────────────────────────┤
+│                                                     │                            │
+│  ══════════════════════════════════════════════════╪════════════════════════════│
+│                                                     │                            │
+│  ┌──────────────────────────────────────────────────▼────────────────────────────┤
+│  │                          SLM PC                                             │
+│  │                                                                             │
+│  │  Services managed by GUI:                                                   │
+│  │                                                                             │
+│  │  ┌─────────────────┐                                                        │
+│  │  │  slm_service    │◀───────────────────────────────────────┘               │
+│  │  │      .py        │                                                        │
+│  │  │  - gRPC :50051  │                                                        │
+│  │  │  - Recv from    │                                                        │
+│  │  │    Main :50053  │                                                        │
+│  │  │  - SLM hardware │                                                        │
+│  │  │    (PCIE)       │                                                        │
+│  │  └─────────────────┘                                                        │
+│  └─────────────────────────────────────────────────────────────────────────────┘
+│                                                                                 │
+│  Configuration File: GUI/services_config.yaml                                  │
+│  - Network IP addresses and ports for each service                             │
+│  - CPU affinity for optimal performance                                        │
+│  - Auto-restart policies                                                       │
+│  - Log directories and settings                                                │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## 📋 Files
+
+- `services_config.yaml` - Main configuration file for all services (network topology, IPs, parameters)
+- `services_manager_gui.py` - **GUI application for managing services (RECOMMENDED)**
 - `requirements.txt` - Python dependencies for GUI manager
-
-- **Dashboard (`dashboard.py`)**: Unified control interface for all system components- `start_all_services.sh` - Launch all enabled services in separate terminals (Linux)
-
-- **Service Manager (`service_manager.py`)**: Process lifecycle management and monitoring- `Hardware/main/arduino.sh` - Arduino/Hardware telemetry service
-
-- **Configuration (`service_config.yaml`)**: Centralized service configuration- `Imaging/Acquisition/start_image_server.sh` - Image acquisition and tracking service
-
-- **Launch Scripts**: Automated startup utilities- `Imaging/Compression/start_save_compressed.sh` - Image compression service
-
-- `SLM/start_generator_service.sh` - SLM hologram generator service
 
 ## 🖥️ Dashboard Interface
 
-## Quick Start (GUI Manager - RECOMMENDED)
-
 The main dashboard provides real-time control and monitoring:
-
-### 1. Install Python Dependencies
 
 ### Features
 
-```bash
+- **Service Management**
+  - Start/stop/restart services across all PCs
+  - Enable/disable services
+  - Auto-restart on crash
+  - CPU affinity configuration
+  - Real-time status monitoring
 
-- **Arduino Hardware Control**# From the services directory
-
-  - DAC output adjustment (laser power, heater control)pip install -r requirements.txt
-
-  - ADC input monitoring (sensor readings)```
-
+- **Arduino Hardware Control** (via Main PC)
+  - DAC output adjustment (laser power on Pin 66, heater on Pin 67)
+  - ADC input monitoring (sensor readings)
+  - I2C device status (SHT3 environment sensor)
   - Digital I/O controls
+  - Real-time telemetry streaming
 
-  - Real-time telemetry streamingOr install individually:
+- **Camera & Tracking** (distributed Camera PC → Main PC)
+  - Image reception monitoring from Camera PC
+  - Particle tracking statistics
+  - Performance metrics (TrackPy 32 processes)
+  - RAMdisk status
+  - JPEG-XL compression progress
+
+- **SLM Control** (Main PC → SLM PC)
+  - Hologram generation status (CUDA on Main PC)
+  - GPU utilization monitoring
+  - Pattern update rate
+  - Network latency to SLM PC
+  - SLM hardware status
+
+- **System Monitoring**
+  - CPU and memory usage per service
+  - Network throughput (10G LAN)
+  - Disk I/O (RAMdisk and permanent storage)
+  - Real-time log viewing from all services
+  - Process health monitoring
+
+## 🚀 Quick Start (GUI Manager - RECOMMENDED)
+
+### 1. Install Python Dependencies
 
 ```bash
+# From the GUI directory
+pip install -r requirements.txt
+```
 
-- **Camera & Tracking**pip install dearpygui pyyaml psutil
+Or install individually:
+```bash
+pip install dearpygui pyyaml psutil
+```
 
-  - Live image feed display```
-
-  - Particle tracking overlays
-
-  - Performance metrics### 2. Configure Services
-
-  - Configuration management
+### 2. Configure Services
 
 Edit `services_config.yaml` and update:
 
-- **SLM Control**- `save_compressed.args.input` - Path to TIFF input directory
+**Network Configuration:**
+- `image_server.args.host` - Set bind address for Image Server on Main PC
+- SLM generator target: `192.168.6.2:50051` (SLM PC)
 
-  - Tweezer position management- `save_compressed.args.output` - Path to compressed output directory
+**Camera PC Paths:**
+- RAMdisk path for ImageWatcher and save_compressed_server
+- Permanent storage path for JPEG-XL files
 
-  - Hologram generation parameters- `arduino_grpc.args.serial_port` - Arduino serial port
-
-  - Pattern presets- CPU affinity settings for your system
-
-  - GPU utilization monitoring
+**Main PC Settings:**
+- `arduino_grpc.args.serial_port` - Arduino Due USB port (e.g., `/dev/ttyACM0` or `COM3`)
+- CPU affinity settings for optimal performance
 
 ### 3. Launch GUI Manager
 
-- **System Monitoring**
-
-  - CPU and memory usage```bash
-
-  - Service health statuspython services_manager_gui.py
-
-  - Network performance```
-
-  - Disk I/O metrics
+```bash
+python services_manager_gui.py
+```
 
 Or on Windows:
-
-## 🔧 Service Manager```powershell
-
+```powershell
 python services_manager_gui.py
-
-Comprehensive service lifecycle management with process monitoring.```
+```
 
 
 

@@ -23,8 +23,8 @@ This directory contains streaming gRPC implementations for reduced-latency commu
 ┌─────────────────┐         Bidirectional Stream        ┌──────────────────┐
 │                 │◄──────────────────────────────────►│                  │
 │  Streaming UI   │   Commands ──►                      │  Streaming       │
-│  (agg_ui_       │   ◄── Responses                     │  Server          │
-│   streaming.py) │                                      │  (grpc_server_   │
+│  (dashboard_       │   ◄── Responses                     │  Server          │
+│   through_client) │                                      │  (grpc_server_   │
 │                 │         Telemetry Stream             │   streaming.py)  │
 │                 │◄──────────────────────────────────│                  │
 └─────────────────┘   ◄── Sensor Updates (1Hz)          └──────────────────┘
