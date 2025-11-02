@@ -2835,9 +2835,9 @@ class AggregateControllerStreaming:
             current_image=self.image_state.latest_image_uint8 if hasattr(self.image_state, 'latest_image_uint8') else None,
             tracked_positions=tracked_positions,
             tracking_metadata={
-                'frame_number': self.image_state.frame_sequence if hasattr(self.image_state, 'frame_sequence') else 0,
+                'frame_number': self.image_state.latest_sequence if hasattr(self.image_state, 'latest_sequence') else 0,
             },
-            frame_number=self.image_state.frame_sequence if hasattr(self.image_state, 'frame_sequence') else 0,
+            frame_number=self.image_state.latest_sequence if hasattr(self.image_state, 'latest_sequence') else 0,
             timestamp=time.time(),
             slm_client=self.slm_client,
             due_manager=self.due_manager,
