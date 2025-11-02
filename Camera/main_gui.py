@@ -171,28 +171,42 @@ def _decode_tiff_image(data: bytes) -> np.ndarray:
     return np.ascontiguousarray(array)
 
 
-def _normalize_to_uint8(image: np.ndarray) -> np.ndarray:
+def _normalize_to_uint8(image: np.ndarray, bit_depth_hint: int = 16) -> np.ndarray:
+    """Normalize image to uint8 for display.
+    
+    Args:
+        image: Input image array
+        bit_depth_hint: Expected bit depth (8, 12, or 16) for uint16 images
+    """
     if image.size == 0:
         return np.zeros((1, 1), dtype=np.uint8)
     if image.dtype == np.uint8:
         return np.ascontiguousarray(image)
     if np.issubdtype(image.dtype, np.unsignedinteger):
-        bit_depth = image.dtype.itemsize * 8
+        actual_bit_depth = image.dtype.itemsize * 8
         
-        # Auto-detect 12-bit images stored in uint16
-        if bit_depth == 16:
-            max_val = np.max(image)
-            if max_val <= 4095:
-                # Treat as 12-bit: scale up to use full uint8 range
-                # 12-bit (0-4095) -> 8-bit (0-255): divide by 16
+        # For uint16 images, use the bit_depth_hint to determine normalization
+        if actual_bit_depth == 16 and bit_depth_hint in [8, 12, 16]:
+            if bit_depth_hint == 8:
+                # Treat as 8-bit stored in uint16 (unusual but supported)
+                return np.ascontiguousarray(image.astype(np.uint8, copy=False))
+            elif bit_depth_hint == 12:
+                # Treat as 12-bit: shift right by 4 bits
+                # 12-bit (0-4095) -> 8-bit (0-255)
                 shifted = np.right_shift(image, 4)
                 return np.ascontiguousarray(shifted.astype(np.uint8, copy=False))
+            else:  # bit_depth_hint == 16
+                # Treat as full 16-bit: shift right by 8 bits
+                # 16-bit (0-65535) -> 8-bit (0-255)
+                shifted = np.right_shift(image, 8)
+                return np.ascontiguousarray(shifted.astype(np.uint8, copy=False))
         
-        if bit_depth >= 8:
-            shift = bit_depth - 8
+        # Default behavior for other unsigned integer types
+        if actual_bit_depth >= 8:
+            shift = actual_bit_depth - 8
             shifted = np.right_shift(image, shift)
         else:
-            shift = 8 - bit_depth
+            shift = 8 - actual_bit_depth
             shifted = np.left_shift(image.astype(np.uint16), shift)
         return np.ascontiguousarray(shifted.astype(np.uint8, copy=False))
     if np.issubdtype(image.dtype, np.signedinteger):
@@ -409,11 +423,12 @@ def create_overlay(
     above_color: Tuple[int, int, int],
     circle_scale: float,
     out: Optional[np.ndarray] = None,
+    bit_depth_hint: int = 16,
 ) -> np.ndarray:
     if image_array.ndim == 2 and image_array.dtype == np.uint8:
         base = image_array
     else:
-        base = _normalize_to_uint8(image_array)
+        base = _normalize_to_uint8(image_array, bit_depth_hint)
     return _compose_overlay(
         base,
         detections,
@@ -523,6 +538,7 @@ class AppState:
     show_tile_grid: bool = False
     use_mass_colormap: bool = False
     mass_cutoff: float = 0.0
+    image_bit_depth: int = 16  # Image bit depth: 8, 12, or 16
     cutoff_below_color: Tuple[int, int, int] = (80, 180, 80)
     cutoff_above_color: Tuple[int, int, int] = (220, 60, 60)
     circle_size_scale: float = 0.5
@@ -897,6 +913,7 @@ class AppState:
                 self.cutoff_above_color,
                 self.circle_size_scale,
                 out=overlay_buffer,
+                bit_depth_hint=self.image_bit_depth,
             )
             self.latest_overlay_array = overlay
             overlay_snapshot = overlay
@@ -1000,6 +1017,7 @@ class AppState:
                 self.cutoff_above_color,
                 self.circle_size_scale,
                 out=overlay_buffer,
+                bit_depth_hint=self.image_bit_depth,
             )
             self.latest_overlay_array = overlay
             self.overlay_needs_refresh = False
@@ -1460,7 +1478,7 @@ class ImageClient:
         if decoded_arr.ndim > 2:
             decoded_arr = np.mean(decoded_arr, axis=-1)
         if decoded_arr.dtype != np.uint8:
-            decoded_arr = _normalize_to_uint8(decoded_arr)
+            decoded_arr = _normalize_to_uint8(decoded_arr, self._state.image_bit_depth)
         decoded_uint8 = np.ascontiguousarray(decoded_arr.astype(np.uint8, copy=False))
         image_float = decoded_uint8.astype(np.float32)
         return decoded_uint8, image_float

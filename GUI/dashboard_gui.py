@@ -414,6 +414,7 @@ class AggregateUI:
     image_target_label: Optional[int] = None
     due_target_label: Optional[int] = None
     slm_target_label: Optional[int] = None
+    image_bit_depth_combo: Optional[int] = None  # Bit depth selection dropdown
     # Image server metrics
     image_sequence_text: Optional[int] = None
     image_latency_text: Optional[int] = None
@@ -1052,6 +1053,9 @@ class AggregateControllerStreaming:
         self.due_endpoint = due_endpoint
         self.slm_endpoint = slm_endpoint
         
+        # Image bit depth setting (8, 12, or 16)
+        self.image_bit_depth = 16  # Default to 16-bit
+        
         self.dac_specs = {spec.name: spec for spec in dac_specs}
         self.analog_specs = {spec.name: spec for spec in analog_specs}
         self.shtc3_spec = shtc3_spec
@@ -1133,6 +1137,17 @@ class AggregateControllerStreaming:
     def set_ui(self, ui: AggregateUI) -> None:
         self.ui = ui
         self._update_feature_controls_ui()
+
+    # Image bit depth management
+    
+    def set_image_bit_depth(self, bit_depth: int) -> None:
+        """Set the image bit depth for normalization (8, 12, or 16)."""
+        if bit_depth not in [8, 12, 16]:
+            logging.warning(f"Invalid bit depth {bit_depth}, must be 8, 12, or 16")
+            return
+        self.image_bit_depth = bit_depth
+        self.image_state.image_bit_depth = bit_depth
+        logging.info(f"Image bit depth set to {bit_depth}-bit")
 
     # Connection management
     
@@ -4246,6 +4261,14 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         dpg.add_text("IMAGE SERVER", color=IMAGE_COLOR)
         image_target_label = dpg.add_text(f"Target: {controller.image_endpoint.display()}", color=TEXT_SECONDARY)
         image_status_label = dpg.add_text("Disconnected", color=STATUS_DISCONNECTED)
+        dpg.add_text("Bit Depth:", color=TEXT_SECONDARY)
+        image_bit_depth_combo = dpg.add_combo(
+            items=["8-bit", "12-bit", "16-bit"],
+            default_value="16-bit",
+            callback=lambda s, a, u: u.set_image_bit_depth(int(a.split("-")[0])),
+            user_data=controller,
+            width=-1
+        )
         image_connect_button = dpg.add_button(label="Connect Image", callback=_on_image_connect,
                                               user_data=controller, width=-1, height=26)
         
@@ -5277,6 +5300,7 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         image_connect_button=image_connect_button,
         due_connect_button=due_connect_button,
         slm_connect_button=slm_connect_button,
+        image_bit_depth_combo=image_bit_depth_combo,
         slm_send_button=slm_send_button,
         slm_clear_button=slm_clear_button,
         slm_affine_inputs=slm_affine_inputs,
