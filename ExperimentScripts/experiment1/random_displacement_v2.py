@@ -1,19 +1,8 @@
 """
-Experiment 1: Random Particle Displacement
+Experiment 1: Random Particle Displacement (Version 2 - Auto-Configured)
 
-This experiment demonstrates automated particle manipulation:
-1. Randomly selects a tracked particle
-2. Decides on a random displacement direction and distance
-3. Creates SLM trap spots needed to move the particle
-4. Waits for the particle to reach the target
-5. Waits 4 seconds
-6. Repeats
-
-This showcases:
-- Particle detection and selection
-- SLM trap control
-- Time-based sequencing
-- State machine implementation
+This version uses the new auto-configuration system where parameters
+are defined once and automatically become configurable in the dashboard.
 """
 
 import sys
@@ -27,7 +16,7 @@ _experiments_root = _script_dir.parent
 if str(_experiments_root) not in sys.path:
     sys.path.insert(0, str(_experiments_root))
 
-from base_script import ExperimentScript, ExperimentContext
+from base_script import ExperimentScript, ExperimentContext, ParamSpec
 import numpy as np
 import time
 from enum import Enum
@@ -41,36 +30,237 @@ class ExperimentState(Enum):
     WAITING = 3
 
 
-class RandomParticleDisplacement(ExperimentScript):
+class RandomParticleDisplacementV2(ExperimentScript):
     """
-    Randomly displaces particles using SLM traps.
+    Randomly displaces particles using SLM traps (Auto-Configured Version).
     
-    This experiment cycles through selecting particles, moving them
-    to random locations, and waiting between moves.
+    All parameters are automatically configurable through the dashboard
+    by registering them with ParamSpec metadata.
     """
     
     def __init__(self):
         super().__init__()
-        self.name = "Random Particle Displacement"
+        self.name = "Random Particle Displacement (Auto-Config)"
         self.description = (
             "Randomly selects particles and moves them to new positions using SLM traps. "
-            "Demonstrates automated particle manipulation with configurable parameters."
+            "All parameters are automatically configurable."
         )
         
-        # Configurable experiment parameters (can be set from dashboard)
-        self.movement_duration_range = (0.5, 4.0)  # seconds to complete movement (random range)
-        self.move_distance_range = (20, 32)  # pixels (random range)
-        self.delay_between_actions = 4.0  # seconds to wait between actions
-        self.min_separation_distance = 64.0  # pixels - minimum distance between consecutive actions
-        self.edge_margin = 64.0  # pixels - minimum distance from image edges
-        self.slm_max_refresh_rate = 30.0  # Hz - maximum SLM refresh rate
-        self.trap_intensity = 0.9
-        self.trap_z_offset = 0.0
-        self.assumed_fps = 30.0  # Assumed frame rate for speed calculation
-        self.target_reached_threshold = 5.0  # pixels - distance to consider target reached
-        self.step_close_enough_threshold = 0.5  # pixels - threshold for multi-step movement
-        self.log_progress_interval = 10  # frames - how often to log movement progress
-        self.log_status_interval = 30  # frames - how often to log status messages
+        # Register all configurable parameters with metadata
+        # Movement parameters
+        self.register_param(ParamSpec(
+            name='movement_duration_min',
+            label='Move Time Min',
+            param_type=float,
+            default=0.5,
+            min_value=0.1,
+            max_value=10.0,
+            step=0.1,
+            unit='s',
+            category='Movement',
+            description='Minimum time to complete a movement',
+            format_str='%.1f'
+        ))
+        
+        self.register_param(ParamSpec(
+            name='movement_duration_max',
+            label='Move Time Max',
+            param_type=float,
+            default=4.0,
+            min_value=0.1,
+            max_value=10.0,
+            step=0.1,
+            unit='s',
+            category='Movement',
+            description='Maximum time to complete a movement',
+            format_str='%.1f'
+        ))
+        
+        self.register_param(ParamSpec(
+            name='move_distance_min',
+            label='Distance Min',
+            param_type=float,
+            default=20.0,
+            min_value=1.0,
+            max_value=500.0,
+            step=1.0,
+            unit='px',
+            category='Movement',
+            description='Minimum displacement distance',
+            format_str='%.1f'
+        ))
+        
+        self.register_param(ParamSpec(
+            name='move_distance_max',
+            label='Distance Max',
+            param_type=float,
+            default=32.0,
+            min_value=1.0,
+            max_value=500.0,
+            step=1.0,
+            unit='px',
+            category='Movement',
+            description='Maximum displacement distance',
+            format_str='%.1f'
+        ))
+        
+        self.register_param(ParamSpec(
+            name='delay_between_actions',
+            label='Delay',
+            param_type=float,
+            default=4.0,
+            min_value=0.0,
+            max_value=60.0,
+            step=0.5,
+            unit='s',
+            category='Timing',
+            description='Wait time between consecutive actions',
+            format_str='%.1f'
+        ))
+        
+        # Spatial constraints
+        self.register_param(ParamSpec(
+            name='min_separation_distance',
+            label='Min Separation',
+            param_type=float,
+            default=64.0,
+            min_value=0.0,
+            max_value=500.0,
+            step=1.0,
+            unit='px',
+            category='Constraints',
+            description='Minimum distance between consecutive actions',
+            format_str='%.1f'
+        ))
+        
+        self.register_param(ParamSpec(
+            name='edge_margin',
+            label='Edge Margin',
+            param_type=float,
+            default=64.0,
+            min_value=0.0,
+            max_value=500.0,
+            step=1.0,
+            unit='px',
+            category='Constraints',
+            description='Minimum distance from image edges',
+            format_str='%.1f'
+        ))
+        
+        # SLM parameters
+        self.register_param(ParamSpec(
+            name='slm_max_refresh_rate',
+            label='SLM Refresh',
+            param_type=float,
+            default=30.0,
+            min_value=1.0,
+            max_value=240.0,
+            step=1.0,
+            unit='Hz',
+            category='SLM',
+            description='Maximum SLM refresh rate',
+            format_str='%.1f'
+        ))
+        
+        self.register_param(ParamSpec(
+            name='trap_intensity',
+            label='Trap Intensity',
+            param_type=float,
+            default=0.9,
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+            unit='',
+            category='SLM',
+            description='Trap intensity (0-1)',
+            format_str='%.2f'
+        ))
+        
+        self.register_param(ParamSpec(
+            name='trap_z_offset',
+            label='Trap Z Offset',
+            param_type=float,
+            default=0.0,
+            min_value=-100.0,
+            max_value=100.0,
+            step=1.0,
+            unit='',
+            category='SLM',
+            description='Z-axis offset for traps',
+            format_str='%.1f'
+        ))
+        
+        # Performance parameters
+        self.register_param(ParamSpec(
+            name='assumed_fps',
+            label='Assumed FPS',
+            param_type=float,
+            default=30.0,
+            min_value=1.0,
+            max_value=240.0,
+            step=1.0,
+            unit='Hz',
+            category='Performance',
+            description='Assumed frame rate for speed calculations',
+            format_str='%.1f'
+        ))
+        
+        self.register_param(ParamSpec(
+            name='target_reached_threshold',
+            label='Target Threshold',
+            param_type=float,
+            default=5.0,
+            min_value=0.1,
+            max_value=50.0,
+            step=0.5,
+            unit='px',
+            category='Performance',
+            description='Distance to consider target reached',
+            format_str='%.1f'
+        ))
+        
+        self.register_param(ParamSpec(
+            name='step_close_enough_threshold',
+            label='Step Threshold',
+            param_type=float,
+            default=0.5,
+            min_value=0.1,
+            max_value=10.0,
+            step=0.1,
+            unit='px',
+            category='Performance',
+            description='Threshold for multi-step movement precision',
+            format_str='%.1f'
+        ))
+        
+        # Logging parameters
+        self.register_param(ParamSpec(
+            name='log_progress_interval',
+            label='Log Progress',
+            param_type=int,
+            default=10,
+            min_value=1,
+            max_value=300,
+            step=5,
+            unit='frames',
+            category='Logging',
+            description='How often to log movement progress',
+            format_str='%d'
+        ))
+        
+        self.register_param(ParamSpec(
+            name='log_status_interval',
+            label='Log Status',
+            param_type=int,
+            default=30,
+            min_value=1,
+            max_value=300,
+            step=5,
+            unit='frames',
+            category='Logging',
+            description='How often to log status messages',
+            format_str='%d'
+        ))
         
         # Image dimensions (will be set from context)
         self.image_width = 0.0
@@ -78,8 +268,8 @@ class RandomParticleDisplacement(ExperimentScript):
         
         # Current cycle parameters (randomized each cycle)
         self.current_movement_duration = 0.0
-        self.current_movement_speed = 0.0  # pixels per frame (calculated)
-        self.last_action_position: Optional[Tuple[float, float]] = None  # Track last action location
+        self.current_movement_speed = 0.0
+        self.last_action_position: Optional[Tuple[float, float]] = None
         
         # CSV logging
         self.csv_file: Optional[Path] = None
@@ -111,19 +301,14 @@ class RandomParticleDisplacement(ExperimentScript):
         """Initialize the experiment"""
         ctx.log(f"=== {self.name} Starting ===", "INFO")
         ctx.log(f"Parameters:", "INFO")
-        ctx.log(f"  Movement duration range: {self.movement_duration_range[0]}-{self.movement_duration_range[1]}s", "INFO")
-        ctx.log(f"  Move distance range: {self.move_distance_range[0]}-{self.move_distance_range[1]} pixels", "INFO")
-        ctx.log(f"  Delay between actions: {self.delay_between_actions}s", "INFO")
-        ctx.log(f"  Minimum separation: {self.min_separation_distance} pixels", "INFO")
-        ctx.log(f"  Edge margin: {self.edge_margin} pixels", "INFO")
-        ctx.log(f"  SLM max refresh rate: {self.slm_max_refresh_rate} Hz", "INFO")
-        ctx.log(f"  Trap intensity: {self.trap_intensity}", "INFO")
-        ctx.log(f"  Trap Z offset: {self.trap_z_offset}", "INFO")
-        ctx.log(f"  Assumed FPS: {self.assumed_fps}", "INFO")
-        ctx.log(f"  Target reached threshold: {self.target_reached_threshold} pixels", "INFO")
-        ctx.log(f"  Step close enough threshold: {self.step_close_enough_threshold} pixels", "INFO")
-        ctx.log(f"  Log progress interval: {self.log_progress_interval} frames", "INFO")
-        ctx.log(f"  Log status interval: {self.log_status_interval} frames", "INFO")
+        
+        # Automatically log all registered parameters
+        for name, spec in self._param_specs.items():
+            value = self.get_param_value(name)
+            if spec.unit:
+                ctx.log(f"  {spec.label}: {value} {spec.unit}", "INFO")
+            else:
+                ctx.log(f"  {spec.label}: {value}", "INFO")
         
         # Get image dimensions from context
         if ctx.current_image is not None:
@@ -206,7 +391,7 @@ class RandomParticleDisplacement(ExperimentScript):
         ctx.log(f"Selected particle at ({px:.1f}, {py:.1f}) with mass {mass:.1f}", "INFO")
         
         # Decide on random displacement distance and direction
-        distance = np.random.uniform(self.move_distance_range[0], self.move_distance_range[1])
+        distance = np.random.uniform(self.move_distance_min, self.move_distance_max)
         angle = np.random.uniform(0, 2 * np.pi)
         
         dx = distance * np.cos(angle)
@@ -219,7 +404,7 @@ class RandomParticleDisplacement(ExperimentScript):
         self.last_action_position = (px, py)
         
         # Randomize movement duration and calculate required speed
-        self.current_movement_duration = np.random.uniform(self.movement_duration_range[0], self.movement_duration_range[1])
+        self.current_movement_duration = np.random.uniform(self.movement_duration_min, self.movement_duration_max)
         expected_frames = self.current_movement_duration * self.assumed_fps
         self.current_movement_speed = distance / expected_frames if expected_frames > 0 else distance
         
@@ -282,7 +467,6 @@ class RandomParticleDisplacement(ExperimentScript):
             return True
         
         # Calculate movement considering SLM refresh rate
-        # If refresh rate allows multiple updates per frame, move in smaller steps
         refresh_period = 1.0 / self.slm_max_refresh_rate if self.slm_max_refresh_rate > 0 else 1.0 / 30.0
         frame_period = 1.0 / self.assumed_fps if self.assumed_fps > 0 else 1.0 / 30.0
         updates_per_frame = max(1, int(frame_period / refresh_period))
@@ -361,7 +545,7 @@ class RandomParticleDisplacement(ExperimentScript):
             
             # Create timestamped CSV file
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.csv_file = logs_dir / f"random_displacement_{timestamp}.csv"
+            self.csv_file = logs_dir / f"random_displacement_v2_{timestamp}.csv"
             
             # Open file and create CSV writer
             self.csv_file_handle = open(self.csv_file, 'w', newline='')
@@ -472,4 +656,4 @@ class RandomParticleDisplacement(ExperimentScript):
 
 
 # Export the script class (this is what the manager will find)
-__all__ = ['RandomParticleDisplacement']
+__all__ = ['RandomParticleDisplacementV2']

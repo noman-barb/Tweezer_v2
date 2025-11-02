@@ -8,9 +8,67 @@ similar to backtesting frameworks for algorithmic trading.
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Dict, List, Optional, Tuple, Callable, Union
 import numpy as np
 from datetime import datetime
+
+
+@dataclass
+class ParamSpec:
+    """
+    Specification for a configurable parameter.
+    
+    Defines metadata about a parameter that the dashboard can use to
+    automatically generate UI controls and handle serialization.
+    """
+    name: str
+    """Internal parameter name (attribute name on the script)"""
+    
+    label: str
+    """Human-readable label for UI"""
+    
+    param_type: type
+    """Python type: float, int, bool, str, or tuple"""
+    
+    default: Any
+    """Default value"""
+    
+    min_value: Optional[Union[float, int]] = None
+    """Minimum value for numeric types"""
+    
+    max_value: Optional[Union[float, int]] = None
+    """Maximum value for numeric types"""
+    
+    step: Optional[Union[float, int]] = None
+    """Step size for numeric inputs"""
+    
+    description: str = ""
+    """Tooltip/help text"""
+    
+    unit: str = ""
+    """Unit of measurement (e.g., 'px', 's', 'Hz')"""
+    
+    category: str = "General"
+    """Parameter category for grouping in UI"""
+    
+    format_str: str = "%.2f"
+    """Format string for display"""
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            'name': self.name,
+            'label': self.label,
+            'param_type': self.param_type.__name__,
+            'default': self.default,
+            'min_value': self.min_value,
+            'max_value': self.max_value,
+            'step': self.step,
+            'description': self.description,
+            'unit': self.unit,
+            'category': self.category,
+            'format_str': self.format_str,
+        }
 
 
 @dataclass
@@ -188,6 +246,56 @@ class ExperimentScript(ABC):
         
         self.error_count: int = 0
         """Number of errors encountered"""
+        
+        # Parameter specifications for auto-configuration
+        self._param_specs: Dict[str, ParamSpec] = {}
+        """Registry of configurable parameters"""
+    
+    def register_param(self, spec: ParamSpec) -> None:
+        """
+        Register a parameter for automatic UI generation.
+        
+        Args:
+            spec: Parameter specification with metadata
+        """
+        self._param_specs[spec.name] = spec
+        # Set default value if not already set
+        if not hasattr(self, spec.name):
+            setattr(self, spec.name, spec.default)
+    
+    def get_param_specs(self) -> Dict[str, ParamSpec]:
+        """Get all registered parameter specifications."""
+        return self._param_specs.copy()
+    
+    def get_param_value(self, name: str) -> Any:
+        """Get current value of a parameter."""
+        return getattr(self, name, None)
+    
+    def set_param_value(self, name: str, value: Any) -> bool:
+        """
+        Set value of a parameter.
+        
+        Args:
+            name: Parameter name
+            value: New value
+            
+        Returns:
+            True if successful, False if parameter doesn't exist
+        """
+        if hasattr(self, name):
+            setattr(self, name, value)
+            return True
+        return False
+    
+    def get_all_param_values(self) -> Dict[str, Any]:
+        """Get current values of all registered parameters."""
+        return {name: self.get_param_value(name) for name in self._param_specs.keys()}
+    
+    def set_params_from_dict(self, params: Dict[str, Any]) -> None:
+        """Set multiple parameters from a dictionary."""
+        for name, value in params.items():
+            if name in self._param_specs:
+                self.set_param_value(name, value)
     
     @abstractmethod
     def setup(self, ctx: ExperimentContext) -> bool:

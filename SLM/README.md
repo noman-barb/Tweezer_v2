@@ -1,6 +1,6 @@
 # SLM Module - Spatial Light Modulator Control
 
-GPU-accelerated hologram generation and hardware control system for creating dynamic optical trap patterns in real-time. The system operates across two PCs connected via 10 Gigabit Ethernet with CUDA-optimized Gerchberg-Saxton algorithm.
+GPU-accelerated hologram generation and hardware control system for creating dynamic optical trap patterns in real-time. The system operates across two PCs connected via direct Ethernet connection with CUDA-optimized Gerchberg-Saxton algorithm.
 
 ## 📖 Table of Contents
 
@@ -17,9 +17,9 @@ GPU-accelerated hologram generation and hardware control system for creating dyn
 
 The SLM module implements a **distributed two-PC architecture**:
 
-- **Main Control PC**: generator_service.py performs GPU-accelerated hologram generation (CUDA)
-- **SLM PC**: slm_service.py drives SLM hardware connected via PCIE
-- **Communication**: 10 Gigabit Ethernet for hologram streaming
+- **Main Control PC**: generator_service.py performs GPU-accelerated hologram generation (CUDA, A4000 GPU)
+- **SLM PC**: slm_service.py drives SLM hardware connected via PCIE adapter
+- **Communication**: Direct Ethernet connection for hologram streaming
 
 ## 🖧 Hardware Topology
 
@@ -47,14 +47,14 @@ The SLM module implements a **distributed two-PC architecture**:
 │  │  │  │  gRPC       │    │  CUDA GPU   │    │  Gerchberg-Saxton │ │        │
 │  │  │  │  Server     │───▶│  Processing │───▶│  Algorithm        │ │        │
 │  │  │  │             │    │             │    │                    │ │        │
-│  │  │  │  Receives   │    │  RTX 4070/  │    │  - 50 iterations  │ │        │
-│  │  │  │  tweezer    │    │  A4000      │    │  - FFT on GPU     │ │        │
-│  │  │  │  positions  │    │  12GB VRAM  │    │  - Phase extract  │ │        │
+│  │  │  │  Receives   │    │  A4000 GPU  │    │  - 2 iterations   │ │        │
+│  │  │  │  tweezer    │    │  12GB VRAM  │    │  - FFT on GPU     │ │        │
+│  │  │  │  positions  │    │             │    │  - Phase extract  │ │        │
 │  │  │  │             │    │             │    │  - 512x512 output │ │        │
 │  │  │  └─────────────┘    └─────────────┘    └────────────────────┘ │        │
 │  │  │         │                                         │            │        │
 │  │  │         │              Hologram Generation       │            │        │
-│  │  │         │              Time: ~1-3 ms             │            │        │
+│  │  │         │              Rate: 200 fps (5 ms)      │            │        │
 │  │  │         ▼                                         ▼            │        │
 │  │  │  ┌─────────────────────────────────────────────────────────┐  │        │
 │  │  │  │         8-bit Phase Pattern (512x512 bytes)            │  │        │
@@ -64,7 +64,7 @@ The SLM module implements a **distributed two-PC architecture**:
 │  │                           │                                                 │
 │  └───────────────────────────┼─────────────────────────────────────────────────┤
 │                              │                                                 │
-│                              │ 10 Gigabit Ethernet                             │
+│                              │ Direct Ethernet Connection                      │
 │                              │ gRPC Streaming                                  │
 │                              │ Target: 192.168.6.2:50051                       │
 │  ════════════════════════════╪═════════════════════════════════════════════════│
@@ -90,11 +90,11 @@ The SLM module implements a **distributed two-PC architecture**:
 │  │                                                      │                     │
 │  │                                                      ▼                     │
 │  │  ┌─────────────────────────────────────────────────────────────────┐        │
-│  │  │                  SLM Hardware (PCIE Connection)                │        │
+│  │  │                  SLM Hardware (PCIE Adapter)                   │        │
 │  │  │                                                                 │        │
 │  │  │  ┌─────────────┐    ┌─────────────┐    ┌────────────────────┐ │        │
 │  │  │  │   PCIE      │    │  Liquid     │    │   Optical Output  │ │        │
-│  │  │  │  Interface  │───▶│  Crystal    │───▶│                    │ │        │
+│  │  │  │  Adapter    │───▶│  Crystal    │───▶│                    │ │        │
 │  │  │  │             │    │  Array      │    │                    │ │        │
 │  │  │  │  512x512    │    │             │    │  - Fourier plane  │ │        │
 │  │  │  │  Phase      │    │  Phase      │    │  - Multiple traps │ │        │
@@ -106,14 +106,14 @@ The SLM module implements a **distributed two-PC architecture**:
 │                                                                                 │
 │  Data Flow:                                                                    │
 │  1. Dashboard → generator_service.py (tweezer positions)                       │
-│  2. generator_service.py → CUDA GPU → hologram generation (1-3ms)             │
-│  3. generator_service.py → SLM PC (10G LAN gRPC streaming)                     │
-│  4. slm_service.py → SLM Hardware (PCIE) → display update                      │
+│  2. generator_service.py → CUDA GPU → hologram generation (200 fps)           │
+│  3. generator_service.py → SLM PC (Direct Ethernet, gRPC streaming)            │
+│  4. slm_service.py → SLM Hardware (PCIE adapter) → display update              │
 │                                                                                 │
-│  Network Configuration:                                                        │
-│  - Generator binds to: 192.168.6.1:50053                                       │
-│  - Driver connects to: 192.168.6.2:50051                                       │
-│  - Generator forwards to: 192.168.6.2:50051 (fire-and-forget mode)            │
+│  Performance Notes:                                                            │
+│  - Generator: 200 fps maximum (with iteration=2, A4000 GPU)                    │
+│  - SLM Hardware: 300 fps maximum (limited by generator performance)            │
+│  - Network: Direct Ethernet connection between Main PC and SLM PC              │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -253,7 +253,10 @@ The SLM module implements a two-tier architecture separating hologram generation
 │  │  │  │ Refresh:    │    │ Response:   │    │ Beam steering & shaping     │ │ │
 │  │  │  │ 60-120 Hz   │    │ <10 ms      │    │ Multiple trap generation    │ │ │
 │  │  │  │ 8-bit depth │    │ Linear LC   │    │ Intensity control           │ │ │
+│  │  │  │ Max: 300fps │    │             │    │ Multiple trap generation    │ │ │
 │  │  │  └─────────────┘    └─────────────┘    └─────────────────────────────┘ │ │
+│  │  │                                                                         │ │
+│  │  │  Note: Hardware capable of 300 fps, but generator limited to 200 fps   │ │
 │  │  └────────────────────────────────────────────────────────────────────────┘ │
 │  └─────────────────────────────────────────────────────────────────────────────┘
 └─────────────────────────────────────────────────────────────────────────────────┘
@@ -308,7 +311,7 @@ The system implements a hybrid Gerchberg-Saxton algorithm optimized for GPU exec
 │  │  │  │ 4. Transfer target amplitude to GPU                             │  │ │
 │  │  │  └──────────────────────────────────────────────────────────────────┘  │ │
 │  │  │                                                                        │ │
-│  │  │  Iterative Loop (typically 50 iterations):                             │ │
+│  │  │  Iterative Loop (typically 2 iterations for 200 fps performance):      │ │
 │  │  │  ┌──────────────────────────────────────────────────────────────────┐  │ │
 │  │  │  │                                                                  │  │ │
 │  │  │  │  Object Plane:  U(x,y) = A_target(x,y) · exp(iφ(x,y))          │  │ │
@@ -355,19 +358,17 @@ The system implements a hybrid Gerchberg-Saxton algorithm optimized for GPU exec
 │  │  Output: 8-bit phase pattern (512x512 bytes)                               │
 │  │                                                                             │
 │  │  Metrics:                                                                   │
-│  │  - Generation Time: ~1-3 ms (GPU-accelerated)                              │
-│  │  - Iterations Completed: 50 (typical)                                      │
-│  │  - Convergence Error: < 0.01 (normalized)                                  │
+│  │  - Generation Rate: 200 fps (5 ms per frame)                                │
+│  │  - Iterations: 2 (optimized for speed)                                     │
+│  │  - GPU: A4000 (12GB VRAM)                                                   │
 │  │  - Memory Transfer: ~1 MB (phase pattern)                                  │
-│  │  - GPU Utilization: 45-60% (during generation)                             │
 │  │                                                                             │
-│  │  Timing Breakdown:                                                          │
-│  │  - Target generation: ~0.2 ms                                               │
-│  │  - GPU memory transfer (H→D): ~0.3 ms                                       │
-│  │  - Iterative computation: ~1.5 ms (50 iterations @ 30μs each)              │
-│  │  - GPU memory transfer (D→H): ~0.3 ms                                       │
-│  │  - gRPC transmission: ~0.5 ms                                               │
-│  │  Total: ~2.8 ms average                                                     │
+│  │  Performance Notes:                                                         │
+│  │  - SLM hardware maximum: 300 fps                                            │
+│  │  - Generator limited to 200 fps by A4000 GPU performance                    │
+│  │  - Iteration count set to 2 for maximum throughput                          │
+│  │  - Network transfer via direct Ethernet connection                          │
+│  │                                                                             │
 │  └─────────────────────────────────────────────────────────────────────────────┘
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```

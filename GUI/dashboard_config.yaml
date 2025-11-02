@@ -1,4 +1,4 @@
-active_config: cfg2
+active_config: cfg3
 configs:
   default:
     name: default
@@ -81,6 +81,7 @@ configs:
         width: null
         height: null
         collapsed: false
+    docking_layout: null
     image_display:
       display_mode: overlay
       show_tile_grid: false
@@ -251,6 +252,7 @@ configs:
         width: 1368
         height: 183
         collapsed: false
+    docking_layout: null
     image_display:
       display_mode: overlay
       show_tile_grid: true
@@ -421,6 +423,7 @@ configs:
         width: 1492
         height: 216
         collapsed: false
+    docking_layout: null
     image_display:
       display_mode: overlay
       show_tile_grid: true
@@ -474,6 +477,377 @@ configs:
       separation: 64.0
       edge_margin: 64.0
       slm_refresh: 30.0
+    theme:
+      hardware_color:
+      - 220
+      - 80
+      - 80
+      - 255
+      image_color:
+      - 80
+      - 200
+      - 90
+      - 255
+      slm_color:
+      - 230
+      - 180
+      - 60
+      - 255
+      status_connected:
+      - 80
+      - 220
+      - 90
+      - 255
+      status_disconnected:
+      - 220
+      - 60
+      - 60
+      - 255
+      text_primary:
+      - 230
+      - 230
+      - 230
+      - 255
+      text_secondary:
+      - 180
+      - 180
+      - 180
+      - 255
+  cfg3:
+    name: cfg3
+    description: ''
+    created_at: '2025-11-02T22:04:18.229090+00:00'
+    viewport:
+      width: 2488
+      height: 1376
+      title: Tweezer Control & Monitoring
+    windows:
+      connections:
+        x: 9
+        y: 14
+        width: 377
+        height: 381
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+      monitoring:
+        x: 12
+        y: 630
+        width: 369
+        height: 189
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+      experiment_scripts:
+        x: 1534
+        y: 7
+        width: 293
+        height: 527
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+      image_viewer:
+        x: 386
+        y: 12
+        width: 1141
+        height: 1340
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 26.0
+      image_display_controls:
+        x: 2151
+        y: 12
+        width: 331
+        height: 425
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+      image_saving:
+        x: 2151
+        y: 12
+        width: 331
+        height: 425
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+      environment_dac:
+        x: 1075
+        y: 205
+        width: 323
+        height: 275
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+      hardware_monitoring:
+        x: 1828
+        y: 11
+        width: 322
+        height: 1336
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+      image_metrics:
+        x: 2150
+        y: 444
+        width: 333
+        height: 902
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+      slm_metrics:
+        x: 1529
+        y: 1197
+        width: 305
+        height: 167
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+      tracking_parameters:
+        x: 1536
+        y: 537
+        width: 293
+        height: 659
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+      slm_control:
+        x: 7
+        y: 822
+        width: 374
+        height: 524
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+      ui_config:
+        x: 10
+        y: 398
+        width: 368
+        height: 229
+        collapsed: false
+        show: true
+        scroll_x: 0.0
+        scroll_y: 0.0
+    docking_layout: '[Window][DockSpaceViewport_11111111]
+
+      Pos=0,0
+
+      Size=2488,1376
+
+      Collapsed=0
+
+
+      [Window][Debug##Default]
+
+      Pos=60,60
+
+      Size=400,400
+
+      Collapsed=0
+
+
+      [Window][###334]
+
+      Pos=2150,444
+
+      Size=333,902
+
+      Collapsed=0
+
+
+      [Window][###205]
+
+      Pos=1075,205
+
+      Size=323,275
+
+      Collapsed=0
+
+
+      [Window][###159]
+
+      Pos=2151,12
+
+      Size=331,425
+
+      Collapsed=0
+
+      DockId=0x00000002,1
+
+
+      [Window][###177]
+
+      Pos=2151,12
+
+      Size=331,425
+
+      Collapsed=0
+
+      DockId=0x00000002,0
+
+
+      [Window][###273]
+
+      Pos=1828,11
+
+      Size=322,1336
+
+      Collapsed=0
+
+
+      [Window][###116]
+
+      Pos=1534,7
+
+      Size=293,527
+
+      Collapsed=0
+
+
+      [Window][###399]
+
+      Pos=1536,537
+
+      Size=293,659
+
+      Collapsed=0
+
+
+      [Window][###390]
+
+      Pos=1529,1197
+
+      Size=305,167
+
+      Collapsed=0
+
+      DockId=0x00000001,1
+
+
+      [Window][###61]
+
+      Pos=9,14
+
+      Size=377,381
+
+      Collapsed=0
+
+      DockId=0x00000003,0
+
+
+      [Window][###103]
+
+      Pos=12,630
+
+      Size=369,189
+
+      Collapsed=0
+
+
+      [Window][###444]
+
+      Pos=7,822
+
+      Size=374,524
+
+      Collapsed=0
+
+
+      [Window][###147]
+
+      Pos=386,12
+
+      Size=1141,1340
+
+      Collapsed=0
+
+
+      [Window][###88]
+
+      Pos=10,398
+
+      Size=368,229
+
+      Collapsed=0
+
+
+      [Window][###833]
+
+      Pos=3,3
+
+      Size=316,210
+
+      Collapsed=0
+
+
+      [Docking][Data]
+
+      DockNode  ID=0x00000001 Pos=1529,1197 Size=305,167 Selected=0xBDE0C931
+
+      DockNode  ID=0x00000002 Pos=2151,12 Size=331,425 Selected=0xDC814626
+
+      DockNode  ID=0x00000003 Pos=9,14 Size=377,381 Selected=0x73B0DD44
+
+      DockSpace ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,0 Size=2488,1376 CentralNode=1
+
+
+      '
+    image_display:
+      display_mode: overlay
+      show_tile_grid: false
+      zoom: 0.949999988079071
+      use_mass_colormap: false
+      mass_cutoff: 0.0
+      below_cutoff_color:
+      - 255
+      - 255
+      - 255
+      above_cutoff_color:
+      - 255
+      - 0
+      - 0
+      circle_scale: 1.0
+    slm_visualization:
+      circle_color:
+      - 0
+      - 255
+      - 0
+      - 255
+      circle_radius: 15.0
+      circle_thickness: 2.0
+    hardware_monitoring:
+      history_limit: 761
+      show_temperature: true
+      show_humidity: true
+      show_analog_channels: true
+    image_metrics:
+      history_limit: 761
+      show_latency: true
+      show_processing: true
+      show_render: true
+      show_features: true
+      show_save: true
+      show_compression: true
+    storage:
+      auto_save_raw: false
+      auto_save_overlay: false
+      save_hdf5: false
+      target_fps: 0.0
+    monitoring:
+      interval_seconds: 5.0
+      auto_start: false
+    experiment: {}
     theme:
       hardware_color:
       - 220

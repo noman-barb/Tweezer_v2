@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple, cast
@@ -512,15 +512,11 @@ class AggregateUI:
     experiment_script_reload_button: Optional[int] = None
     experiment_script_status_text: Optional[int] = None
     experiment_script_info_text: Optional[int] = None
-    # Experiment script parameters
-    experiment_move_time_min: Optional[int] = None
-    experiment_move_time_max: Optional[int] = None
-    experiment_distance_min: Optional[int] = None
-    experiment_distance_max: Optional[int] = None
-    experiment_delay: Optional[int] = None
-    experiment_separation: Optional[int] = None
-    experiment_edge_margin: Optional[int] = None
-    experiment_slm_refresh: Optional[int] = None
+    # Experiment script parameters - Dynamic system
+    experiment_params_container: Optional[int] = None
+    """Container for dynamically generated parameter controls"""
+    experiment_param_widgets: Dict[str, int] = field(default_factory=dict)
+    """Maps parameter names to their widget IDs"""
     # Dashboard UI configuration management
     ui_config_combo: Optional[int] = None
     ui_config_save_button: Optional[int] = None
@@ -1951,48 +1947,26 @@ class AggregateControllerStreaming:
         return self.dashboard_config_manager.active_config_name
     
     def _get_current_experiment_params(self) -> Dict[str, Any]:
-        """Get current experiment parameters from UI."""
+        """Get current experiment parameters from UI (auto-config system)."""
         params = {}
-        if self.ui:
-            if self.ui.experiment_move_time_min:
-                params['move_time_min'] = dpg.get_value(self.ui.experiment_move_time_min)
-            if self.ui.experiment_move_time_max:
-                params['move_time_max'] = dpg.get_value(self.ui.experiment_move_time_max)
-            if self.ui.experiment_distance_min:
-                params['distance_min'] = dpg.get_value(self.ui.experiment_distance_min)
-            if self.ui.experiment_distance_max:
-                params['distance_max'] = dpg.get_value(self.ui.experiment_distance_max)
-            if self.ui.experiment_delay:
-                params['delay'] = dpg.get_value(self.ui.experiment_delay)
-            if self.ui.experiment_separation:
-                params['separation'] = dpg.get_value(self.ui.experiment_separation)
-            if self.ui.experiment_edge_margin:
-                params['edge_margin'] = dpg.get_value(self.ui.experiment_edge_margin)
-            if self.ui.experiment_slm_refresh:
-                params['slm_refresh'] = dpg.get_value(self.ui.experiment_slm_refresh)
+        if self.ui and self.ui.experiment_param_widgets:
+            # Get all parameter values from dynamically created widgets
+            for param_name, widget_id in self.ui.experiment_param_widgets.items():
+                if dpg.does_item_exist(widget_id):
+                    params[param_name] = dpg.get_value(widget_id)
         return params
     
     def _apply_experiment_params(self, params: Dict[str, Any]) -> None:
-        """Apply experiment parameters to UI."""
-        if not self.ui:
+        """Apply experiment parameters to UI (auto-config system)."""
+        if not self.ui or not self.ui.experiment_param_widgets:
             return
         
-        if 'move_time_min' in params and self.ui.experiment_move_time_min:
-            dpg.set_value(self.ui.experiment_move_time_min, params['move_time_min'])
-        if 'move_time_max' in params and self.ui.experiment_move_time_max:
-            dpg.set_value(self.ui.experiment_move_time_max, params['move_time_max'])
-        if 'distance_min' in params and self.ui.experiment_distance_min:
-            dpg.set_value(self.ui.experiment_distance_min, params['distance_min'])
-        if 'distance_max' in params and self.ui.experiment_distance_max:
-            dpg.set_value(self.ui.experiment_distance_max, params['distance_max'])
-        if 'delay' in params and self.ui.experiment_delay:
-            dpg.set_value(self.ui.experiment_delay, params['delay'])
-        if 'separation' in params and self.ui.experiment_separation:
-            dpg.set_value(self.ui.experiment_separation, params['separation'])
-        if 'edge_margin' in params and self.ui.experiment_edge_margin:
-            dpg.set_value(self.ui.experiment_edge_margin, params['edge_margin'])
-        if 'slm_refresh' in params and self.ui.experiment_slm_refresh:
-            dpg.set_value(self.ui.experiment_slm_refresh, params['slm_refresh'])
+        # Apply all parameter values to their respective widgets
+        for param_name, value in params.items():
+            if param_name in self.ui.experiment_param_widgets:
+                widget_id = self.ui.experiment_param_widgets[param_name]
+                if dpg.does_item_exist(widget_id):
+                    dpg.set_value(widget_id, value)
     
     def _get_current_theme_colors(self) -> Dict[str, Any]:
         """Get current theme colors."""
@@ -2942,6 +2916,124 @@ class AggregateControllerStreaming:
             recent_logs = list(self.experiment_log_messages)[-10:]
             log_text = "\n".join(recent_logs)
             dpg.set_value(self.ui.experiment_script_info_text, log_text)
+    
+    def _populate_experiment_params_ui(self, script: ExperimentScript) -> None:
+        """
+        Dynamically generate UI controls for experiment parameters based on ParamSpec.
+        
+        This method introspects the script's registered parameters and creates
+        appropriate UI widgets automatically.
+        """
+        if not self.ui or not self.ui.experiment_params_container:
+            return
+        
+        # Clear existing parameter widgets
+        if dpg.does_item_exist(self.ui.experiment_params_container):
+            # Delete all children
+            children = dpg.get_item_children(self.ui.experiment_params_container, slot=1)
+            if children:
+                for child in children:
+                    dpg.delete_item(child)
+        
+        # Clear the widget mapping
+        self.ui.experiment_param_widgets = {}
+        
+        # Get parameter specifications from script
+        try:
+            param_specs = script.get_param_specs()
+        except AttributeError:
+            # Script doesn't support auto-config - show message
+            with dpg.parent(self.ui.experiment_params_container):
+                dpg.add_text("This script uses manual parameter configuration", color=(180, 180, 180, 255))
+            return
+        
+        if not param_specs:
+            # No auto-config parameters - show message
+            with dpg.parent(self.ui.experiment_params_container):
+                dpg.add_text("This script has no configurable parameters", color=(180, 180, 180, 255))
+            return
+        
+        # Group parameters by category
+        categories: Dict[str, List[Tuple[str, Any]]] = {}
+        for name, spec in param_specs.items():
+            category = spec.category or "General"
+            if category not in categories:
+                categories[category] = []
+            categories[category].append((name, spec))
+        
+        # Create UI controls grouped by category
+        with dpg.parent(self.ui.experiment_params_container):
+            for category, params in sorted(categories.items()):
+                # Category header
+                if len(categories) > 1:
+                    dpg.add_text(category, color=(150, 150, 255, 255))
+                    dpg.add_spacing(count=1)
+                
+                for param_name, spec in sorted(params, key=lambda x: x[1].label):
+                    current_value = script.get_param_value(param_name)
+                    
+                    # Generate appropriate widget based on type
+                    if spec.param_type == float:
+                        widget_id = dpg.add_input_float(
+                            label=f"{spec.label} ({spec.unit})" if spec.unit else spec.label,
+                            default_value=current_value if current_value is not None else spec.default,
+                            width=150,
+                            min_value=spec.min_value if spec.min_value is not None else 0.0,
+                            max_value=spec.max_value if spec.max_value is not None else 100.0,
+                            min_clamped=spec.min_value is not None,
+                            max_clamped=spec.max_value is not None,
+                            step=spec.step if spec.step else 0.1,
+                            format=spec.format_str
+                        )
+                    
+                    elif spec.param_type == int:
+                        widget_id = dpg.add_input_int(
+                            label=f"{spec.label} ({spec.unit})" if spec.unit else spec.label,
+                            default_value=current_value if current_value is not None else spec.default,
+                            width=150,
+                            min_value=int(spec.min_value) if spec.min_value is not None else 0,
+                            max_value=int(spec.max_value) if spec.max_value is not None else 1000,
+                            min_clamped=spec.min_value is not None,
+                            max_clamped=spec.max_value is not None,
+                            step=int(spec.step) if spec.step else 1
+                        )
+                    
+                    elif spec.param_type == bool:
+                        widget_id = dpg.add_checkbox(
+                            label=spec.label,
+                            default_value=current_value if current_value is not None else spec.default
+                        )
+                    
+                    elif spec.param_type == str:
+                        widget_id = dpg.add_input_text(
+                            label=spec.label,
+                            default_value=current_value if current_value is not None else spec.default,
+                            width=150
+                        )
+                    
+                    else:
+                        # Unsupported type - skip
+                        logging.warning(f"Unsupported parameter type for {param_name}: {spec.param_type}")
+                        continue
+                    
+                    # Store widget ID for later access
+                    self.ui.experiment_param_widgets[param_name] = widget_id
+                    
+                    # Add tooltip if description available
+                    if spec.description and dpg.does_item_exist(widget_id):
+                        with dpg.tooltip(widget_id):
+                            dpg.add_text(spec.description, wrap=200)
+                
+                dpg.add_spacing(count=1)
+            
+            # Add apply button
+            dpg.add_spacing(count=1)
+            dpg.add_button(
+                label="Apply Parameters",
+                callback=_on_experiment_params_apply,
+                user_data=self,
+                width=-1
+            )
 
     def shutdown(self) -> None:
         """Shutdown all connections."""
@@ -3852,6 +3944,47 @@ def _on_monitoring_path_clicked(sender: int, app_data: Any, user_data: Aggregate
 
 # Experiment script callbacks
 
+def _on_experiment_script_selected(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle script selection - populate parameters UI."""
+    controller = user_data
+    
+    if not controller.ui:
+        return
+    
+    script_name = dpg.get_value(sender)
+    if not script_name or script_name == "No scripts found":
+        return
+    
+    # Get script class and create temporary instance for introspection
+    try:
+        if script_name in controller.script_manager.available_scripts:
+            script_class = controller.script_manager.available_scripts[script_name]
+            # Create a temporary instance to introspect parameters (no context needed)
+            temp_script = script_class()
+            
+            # Check if script supports auto-config
+            if hasattr(temp_script, 'get_param_specs'):
+                controller._populate_experiment_params_ui(temp_script)
+                logging.info(f"Loaded parameters for script: {script_name}")
+            else:
+                # Script doesn't support auto-config, clear parameters UI
+                if controller.ui.experiment_params_container and dpg.does_item_exist(controller.ui.experiment_params_container):
+                    dpg.delete_item(controller.ui.experiment_params_container, children_only=True)
+                    dpg.add_text("This script does not support auto-configuration", 
+                               parent=controller.ui.experiment_params_container,
+                               color=(180, 180, 180, 255))
+                logging.warning(f"Script {script_name} does not support auto-configuration")
+        else:
+            logging.error(f"Script not found: {script_name}")
+    except Exception as e:
+        logging.error(f"Failed to load script parameters: {e}")
+        if controller.ui.experiment_params_container and dpg.does_item_exist(controller.ui.experiment_params_container):
+            dpg.delete_item(controller.ui.experiment_params_container, children_only=True)
+            dpg.add_text(f"Error loading parameters: {str(e)}", 
+                       parent=controller.ui.experiment_params_container,
+                       color=(255, 100, 100, 255))
+
+
 def _on_experiment_script_start(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
     """Start the selected experiment script."""
     controller = user_data
@@ -3915,50 +4048,32 @@ def _on_experiment_script_reload(sender: int, app_data: Any, user_data: Aggregat
 
 
 def _on_experiment_params_apply(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
-    """Apply experiment parameters to the current script."""
+    """Apply experiment parameters to the current script (auto-config system)."""
     controller = user_data
     
-    if not controller.ui:
+    if not controller.ui or not controller.ui.experiment_param_widgets:
+        logging.warning("No parameter widgets available")
         return
     
     # Get current script instance
     if controller.script_manager.current_script:
         script = controller.script_manager.current_script
         
-        # Apply parameters if they exist on the script
-        if hasattr(script, 'movement_duration_range') and controller.ui.experiment_move_time_min and controller.ui.experiment_move_time_max:
-            min_time = dpg.get_value(controller.ui.experiment_move_time_min)
-            max_time = dpg.get_value(controller.ui.experiment_move_time_max)
-            script.movement_duration_range = (min_time, max_time)
-            logging.info(f"Set movement duration range: {min_time:.2f}-{max_time:.2f}s")
+        # Check if script supports auto-config
+        if not hasattr(script, 'set_param_value'):
+            logging.warning("Script does not support auto-configuration")
+            return
         
-        if hasattr(script, 'move_distance_range') and controller.ui.experiment_distance_min and controller.ui.experiment_distance_max:
-            min_dist = dpg.get_value(controller.ui.experiment_distance_min)
-            max_dist = dpg.get_value(controller.ui.experiment_distance_max)
-            script.move_distance_range = (min_dist, max_dist)
-            logging.info(f"Set move distance range: {min_dist:.1f}-{max_dist:.1f}px")
+        # Apply all parameters from UI widgets to script
+        params_applied = 0
+        for param_name, widget_id in controller.ui.experiment_param_widgets.items():
+            if dpg.does_item_exist(widget_id):
+                value = dpg.get_value(widget_id)
+                if script.set_param_value(param_name, value):
+                    params_applied += 1
+                    logging.debug(f"Set {param_name} = {value}")
         
-        if hasattr(script, 'delay_between_actions') and controller.ui.experiment_delay:
-            delay = dpg.get_value(controller.ui.experiment_delay)
-            script.delay_between_actions = delay
-            logging.info(f"Set delay between actions: {delay:.2f}s")
-        
-        if hasattr(script, 'min_separation_distance') and controller.ui.experiment_separation:
-            separation = dpg.get_value(controller.ui.experiment_separation)
-            script.min_separation_distance = separation
-            logging.info(f"Set minimum separation: {separation:.1f}px")
-        
-        if hasattr(script, 'edge_margin') and controller.ui.experiment_edge_margin:
-            margin = dpg.get_value(controller.ui.experiment_edge_margin)
-            script.edge_margin = margin
-            logging.info(f"Set edge margin: {margin:.1f}px")
-        
-        if hasattr(script, 'slm_max_refresh_rate') and controller.ui.experiment_slm_refresh:
-            refresh = dpg.get_value(controller.ui.experiment_slm_refresh)
-            script.slm_max_refresh_rate = refresh
-            logging.info(f"Set SLM max refresh rate: {refresh:.1f}Hz")
-        
-        logging.info("Experiment parameters applied successfully")
+        logging.info(f"Applied {params_applied} parameters to running script")
     else:
         logging.warning("No script running - parameters will be applied when script starts")
 
@@ -4225,117 +4340,18 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
             label="Script",
             items=available_scripts if available_scripts else ["No scripts found"],
             default_value=available_scripts[0] if available_scripts else "No scripts found",
-            width=-1
+            width=-1,
+            callback=_on_experiment_script_selected,
+            user_data=controller
         )
         
         dpg.add_spacing(count=1)
         
-        # Script parameters (collapsible section)
-        with dpg.collapsing_header(label="Script Parameters", default_open=False):
-            dpg.add_text("Random Displacement", color=(180, 180, 180, 255))
-            dpg.add_spacing(count=1)
-            
-            # Movement duration range
-            with dpg.group(horizontal=True):
-                dpg.add_text("Move Time (s):", color=TEXT_SECONDARY)
-                experiment_move_time_min = dpg.add_input_float(
-                    label="##move_time_min",
-                    default_value=0.5,
-                    width=75,
-                    min_value=0.1,
-                    max_value=10.0,
-                    min_clamped=True,
-                    step=0.1,
-                    format="%.1f"
-                )
-                dpg.add_text("-", color=TEXT_SECONDARY)
-                experiment_move_time_max = dpg.add_input_float(
-                    label="##move_time_max",
-                    default_value=4.0,
-                    width=75,
-                    min_value=0.1,
-                    max_value=10.0,
-                    min_clamped=True,
-                    step=0.1,
-                    format="%.1f"
-                )
-            
-            # Displacement distance range
-            with dpg.group(horizontal=True):
-                dpg.add_text("Distance (px):", color=TEXT_SECONDARY)
-                experiment_distance_min = dpg.add_input_float(
-                    label="##distance_min",
-                    default_value=20.0,
-                    width=75,
-                    min_value=1.0,
-                    max_value=500.0,
-                    min_clamped=True,
-                    step=1.0,
-                    format="%.1f"
-                )
-                dpg.add_text("-", color=TEXT_SECONDARY)
-                experiment_distance_max = dpg.add_input_float(
-                    label="##distance_max",
-                    default_value=32.0,
-                    width=75,
-                    min_value=1.0,
-                    max_value=500.0,
-                    min_clamped=True,
-                    step=1.0,
-                    format="%.1f"
-                )
-            
-            # Delay between actions
-            experiment_delay = dpg.add_input_float(
-                label="Delay (s)",
-                default_value=4.0,
-                width=120,
-                min_value=0.0,
-                max_value=60.0,
-                min_clamped=True,
-                step=0.5
-            )
-            
-            # Minimum separation
-            experiment_separation = dpg.add_input_float(
-                label="Min Separation (px)",
-                default_value=64.0,
-                width=120,
-                min_value=0.0,
-                max_value=500.0,
-                min_clamped=True,
-                step=1.0
-            )
-            
-            # Edge margin
-            experiment_edge_margin = dpg.add_input_float(
-                label="Edge Margin (px)",
-                default_value=64.0,
-                width=120,
-                min_value=0.0,
-                max_value=500.0,
-                min_clamped=True,
-                step=1.0
-            )
-            
-            # SLM refresh rate
-            experiment_slm_refresh = dpg.add_input_float(
-                label="SLM Refresh (Hz)",
-                default_value=30.0,
-                width=120,
-                min_value=1.0,
-                max_value=240.0,
-                min_clamped=True,
-                step=1.0
-            )
-            
-            dpg.add_spacing(count=1)
-            dpg.add_button(
-                label="Apply Parameters",
-                callback=_on_experiment_params_apply,
-                user_data=controller,
-                width=-1
-            )
+        # Script parameters (collapsible section) - Will be dynamically populated
+        experiment_params_container = dpg.generate_uuid()
+        with dpg.collapsing_header(label="Script Parameters", default_open=False, tag=experiment_params_container):
+            # This will be populated dynamically when a script is selected
+            dpg.add_text("Select a script to see its parameters", color=(180, 180, 180, 255))
         
         dpg.add_spacing(count=1)
         
@@ -5367,14 +5383,7 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         experiment_script_reload_button=experiment_script_reload_button,
         experiment_script_status_text=experiment_script_status_text,
         experiment_script_info_text=experiment_script_info_text,
-        experiment_move_time_min=experiment_move_time_min,
-        experiment_move_time_max=experiment_move_time_max,
-        experiment_distance_min=experiment_distance_min,
-        experiment_distance_max=experiment_distance_max,
-        experiment_delay=experiment_delay,
-        experiment_separation=experiment_separation,
-        experiment_edge_margin=experiment_edge_margin,
-        experiment_slm_refresh=experiment_slm_refresh,
+        experiment_params_container=experiment_params_container,
         ui_config_combo=ui_config_combo,
         ui_config_save_button=ui_config_save_button,
         ui_config_load_button=ui_config_load_button,
@@ -5491,6 +5500,20 @@ def run_ui(controller: AggregateControllerStreaming, ui: AggregateUI) -> None:
     """Run the UI main loop."""
     controller.set_ui(ui)
     # Note: viewport is already shown in create_ui
+    
+    # Initialize experiment parameters UI with first script if available
+    if ui.experiment_script_combo and dpg.does_item_exist(ui.experiment_script_combo):
+        script_name = dpg.get_value(ui.experiment_script_combo)
+        if script_name and script_name != "No scripts found":
+            try:
+                if script_name in controller.script_manager.available_scripts:
+                    script_class = controller.script_manager.available_scripts[script_name]
+                    temp_script = script_class()
+                    if hasattr(temp_script, 'get_param_specs'):
+                        controller._populate_experiment_params_ui(temp_script)
+                        logging.info(f"Initialized parameters for default script: {script_name}")
+            except Exception as e:
+                logging.warning(f"Failed to initialize parameters for default script: {e}")
     
     while dpg.is_dearpygui_running():
         controller.update()

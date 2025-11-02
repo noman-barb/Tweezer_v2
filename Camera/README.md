@@ -1,6 +1,6 @@
 # Camera Module - Real-Time Particle Tracking System
 
-High-performance image acquisition and particle tracking system with TrackPy integration, gRPC streaming, and HDF5 data storage. The system operates across two PCs connected via 10 Gigabit Ethernet for optimal performance.
+High-performance image acquisition and particle tracking system with TrackPy integration, gRPC streaming, and HDF5 data storage. The system operates across two PCs connected via direct Ethernet connection for optimal performance.
 
 ## 📖 Table of Contents
 
@@ -19,7 +19,7 @@ High-performance image acquisition and particle tracking system with TrackPy int
 The Camera module operates in a **distributed architecture across two PCs**:
 
 - **Camera PC**: Hamamatsu camera acquisition, RAMdisk storage, ImageWatcher, and save_compressed_server
-- **Main Control PC**: ImageServer_with_track.py receives images via 10G LAN and performs TrackPy tracking
+- **Main Control PC**: ImageServer_with_track.py receives images via direct Ethernet connection and performs TrackPy tracking
 
 ## 🖧 Hardware Topology
 
@@ -60,14 +60,14 @@ The Camera module operates in a **distributed architecture across two PCs**:
 │  │  │ - Detects new TIFFs     │    │ - Monitors RAMdisk      │               │
 │  │  │ - Sends to Main PC      │    │ - Converts TIFF→JPEG-XL │               │
 │  │  │ - gRPC streaming        │    │ - Lossless compression  │               │
-│  │  │   (10G LAN)             │    │ - Saves to permanent    │               │
+│  │  │   (Direct Ethernet)     │    │ - Saves to permanent    │               │
 │  │  │                         │    │   storage               │               │
 │  │  └───────┬─────────────────┘    └────────┬────────────────┘               │
 │  │          │                               │                                │
 │  └──────────┼───────────────────────────────┼────────────────────────────────┤
 │             │                               │                                │
-│             │ 10 Gigabit                    ▼                                │
-│             │ Ethernet              ┌─────────────────┐                      │
+│             │ Direct Ethernet               ▼                                │
+│             │ Connection            ┌─────────────────┐                      │
 │             │                       │   Permanent     │                      │
 │             │                       │    Storage      │                      │
 │             │                       │  (JPEG-XL)      │                      │
@@ -82,11 +82,11 @@ The Camera module operates in a **distributed architecture across two PCs**:
 │  │  │                                                                 │      │
 │  │  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐ │      │
 │  │  │  │   gRPC      │    │   Tile      │    │   TrackPy Engine   │ │      │
-│  │  │  │   Server    │───▶│  Processing │───▶│   (32 processes)    │ │      │
-│  │  │  │             │    │  256x256    │    │                     │ │      │
+│  │  │  │   Server    │───▶│  Processing │───▶│   (32 AMD EPYC     │ │      │
+│  │  │  │             │    │  256x256    │    │    gen 2 cores)     │ │      │
 │  │  │  │  Receives   │    │  +32px      │    │  - Particle detect  │ │      │
 │  │  │  │  images     │    │  overlap    │    │  - Sub-pixel track  │ │      │
-│  │  │  │  from       │    │             │    │  - Real-time        │ │      │
+│  │  │  │  from       │    │             │    │  - ~40ms latency    │ │      │
 │  │  │  │  Camera PC  │    └─────────────┘    └─────────────────────┘ │      │
 │  │  │  └─────────────┘                                                │      │
 │  │  │         │                                                       │      │
@@ -102,8 +102,8 @@ The Camera module operates in a **distributed architecture across two PCs**:
 │                                                                                │
 │  Data Flow Summary:                                                           │
 │  1. Camera → RAMdisk (TIFF) [Camera PC]                                       │
-│  2. RAMdisk → ImageWatcher → Main PC Image Server (10G LAN)                   │
-│  3. Image Server → TrackPy → Results to Dashboard/SLM [Main PC]               │
+│  2. RAMdisk → ImageWatcher → Main PC (Direct Ethernet)                        │
+│  3. Image Server → TrackPy (32 EPYC cores, ~40ms) → Results [Main PC]         │
 │  4. RAMdisk → save_compressed_server → Permanent Storage (JPEG-XL) [Camera PC]│
 │                                                                                │
 │  When dashboard "save" is pressed:                                            │
@@ -120,7 +120,7 @@ The Camera module operates in a **distributed architecture across two PCs**:
 **Purpose**: Monitors RAMdisk for new TIFF files and streams them to Main PC
 
 - Watches RAMdisk directory for new `.tif`/`.tiff` files
-- Sends images via gRPC to ImageServer on Main PC (10G LAN)
+- Sends images via gRPC to ImageServer on Main PC (Direct Ethernet)
 - Handles network disconnections and reconnection
 - Supports both polling and event-driven (watchdog) modes
 - Can optionally delete images after successful upload
@@ -131,8 +131,9 @@ The Camera module operates in a **distributed architecture across two PCs**:
 
 - gRPC server on port 50052
 - Receives images from ImageWatcher (Camera PC)
-- Tile-based TrackPy processing (32 processes)
+- Tile-based TrackPy processing (32 AMD EPYC gen 2 cores)
 - 256x256 tiles with 32px overlap
+- Tracking latency: ~40ms for 1152x1152 images with ~3500 particles
 - Sub-pixel particle localization
 - Results streamed to dashboard and SLM control
 
@@ -349,8 +350,10 @@ The particle tracking system implements a sophisticated multi-stage pipeline opt
 │  │  │ └─────────┘ │    │ └─────────┘ │    │ └─────────┘ │    │ └─────────┘ │  │
 │  │  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘  │
 │  │                                                                             │
-│  │  Total End-to-End Latency: 10-20 ms (Detection → Output)                   │
-│  │  Throughput: 100+ frames/second with 1000+ particles/frame                 │
+│  │  Total End-to-End Latency: ~40 ms (Detection → Output)                     │
+│  │  Image Size: 1152x1152 pixels                                              │
+│  │  Typical Particle Count: ~3500 particles/frame                             │
+│  │  Processing Hardware: 32 AMD EPYC gen 2 cores                              │
 │  └─────────────────────────────────────────────────────────────────────────────┘
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```

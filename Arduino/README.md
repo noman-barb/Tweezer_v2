@@ -143,7 +143,7 @@ The Arduino Due is connected to the **Main Control PC** and provides hardware co
 │  - SHT3 environment sensor on I2C (temperature/humidity)                       │
 │  - 12-bit DAC/ADC resolution for precision control                             │
 │  - CRC-8 error checking for reliable communication                             │
-│  - Sub-millisecond command response time                                       │
+│  - Millisecond-level command response latency                                  │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -604,28 +604,28 @@ service DueStreaming {
 │  ┌─────────────────────────────────────────────────────────────────────────────┤
 │  │                        Command Processing                                   │
 │  │                                                                             │
-│  │  Operation Type          │ Latency (μs) │ Throughput  │ Notes              │
-│  │  ────────────────────────│──────────────│─────────────│──────────────────  │
-│  │  Digital Read/Write      │    50-100    │  10,000 Hz  │ Direct GPIO        │
-│  │  Analog Read (12-bit)    │   100-200    │   5,000 Hz  │ ADC conversion     │
-│  │  Analog Write (DAC)      │    80-150    │   6,000 Hz  │ DAC settling       │
-│  │  Batch Write (8 pins)    │    20-50     │  20,000 Hz  │ Parallel port      │
-│  │  I2C Transaction         │   500-2000   │     500 Hz  │ Bus protocol       │
-│  │  SPI Transfer (1 byte)   │    10-30     │  30,000 Hz  │ Hardware SPI       │
-│  │  Interrupt Query         │    30-80     │  12,000 Hz  │ Counter read       │
-│  │  Timer Operations        │    40-100    │  10,000 Hz  │ TC2 hardware       │
+│  Operation Type          │ Latency      │ Notes                           │
+│  ────────────────────────│──────────────│────────────────────────────────  │
+│  Digital Read/Write      │ millisecond  │ Direct GPIO                     │
+│  Analog Read (12-bit)    │ millisecond  │ ADC conversion                  │
+│  Analog Write (DAC)      │ millisecond  │ DAC settling                    │
+│  Batch Write (8 pins)    │ millisecond  │ Parallel port                   │
+│  I2C Transaction         │ millisecond  │ Bus protocol                    │
+│  SPI Transfer            │ millisecond  │ Hardware SPI                    │
+│  Interrupt Query         │ millisecond  │ Counter read                    │
+│  Timer Operations        │ millisecond  │ TC2 hardware                    │
 │  └─────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────────────┤
 │  │                      Communication Performance                              │
 │  │                                                                             │
-│  │  Layer                   │ Latency      │ Bandwidth   │ Error Rate         │
-│  │  ────────────────────────│──────────────│─────────────│──────────────────  │
-│  │  USB Serial (2 Mbaud)    │    1-2 ms    │  200 KB/s   │ < 1e-9 (with CRC) │
-│  │  CRC-8 Validation        │    5-10 μs   │  N/A        │ 99.6% detection    │
-│  │  gRPC Overhead           │   100-500 μs │  Variable   │ TCP reliability    │
-│  │  Python Bridge          │   200-800 μs │  Variable   │ Exception handling │
-│  │  Total Round-trip        │    2-5 ms    │  100 KB/s   │ End-to-end         │
+│  │  Layer                   │ Latency      │ Error Rate                       │
+│  │  ────────────────────────│──────────────│────────────────────────────────  │
+│  │  USB Serial (2 Mbaud)    │ millisecond  │ < 1e-9 (with CRC)               │
+│  │  CRC-8 Validation        │ millisecond  │ 99.6% detection                 │
+│  │  gRPC Overhead           │ millisecond  │ TCP reliability                 │
+│  │  Python Bridge           │ millisecond  │ Exception handling              │
+│  │  Total Round-trip        │ millisecond  │ End-to-end                      │
 │  └─────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────────────┤

@@ -14,26 +14,26 @@ A comprehensive optical tweezer control system with real-time particle tracking,
 
 ## 🏗️ System Architecture
 
-The Tweezer Control System follows a distributed microservices architecture across multiple PCs connected via 10 Gigabit Ethernet for low-latency gRPC communication:
+The Tweezer Control System follows a distributed microservices architecture across multiple PCs connected via direct Ethernet connections for low-latency gRPC communication:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────────────────────┐
 │                    TWEEZER DISTRIBUTED CONTROL SYSTEM                          │
-│                        (Multi-PC 10G LAN Architecture)                         │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
+│                     (Multi-PC Direct Connection Architecture)                  │
+├────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                │
 │  ┌─────────────────────────────────────────────────────────────────────────────┤
-│  │                         MAIN CONTROL PC                                    │
-│  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
-│  │  │    GUI      │    │   Image     │    │   Arduino   │    │    SLM      │  │
-│  │  │ Dashboard   │    │   Tracker   │    │    gRPC     │    │  Hologram   │  │
-│  │  │             │    │   Server    │    │   Server    │    │  Generator  │  │
-│  │  │  ┌───────┐  │    │  ┌───────┐  │    │             │    │             │  │
-│  │  │  │Service│  │    │  │TrackPy│  │    │  ┌───────┐  │    │  ┌───────┐  │  │
-│  │  │  │Manager│  │    │  │Engine │  │    │  │Serial │  │    │  │CUDA   │  │  │
-│  │  │  └───────┘  │    │  │:50052 │  │    │  │Bridge │  │    │  │Engine │  │  │
-│  │  │             │    │  └───────┘  │    │  │:50051 │  │    │  │:50053 │  │  │
-│  │  └─────────────┘    └─────────────┘    │  └───────┘  │    │  └───────┘  │  │
+│  │                         MAIN CONTROL PC                                     │
+│  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐   │
+│  │  │    GUI      │    │   Image     │    │   Arduino   │    │    SLM      │   │
+│  │  │ Dashboard   │    │   Tracker   │    │    gRPC     │    │  Hologram   │   │
+│  │  │             │    │   Server    │    │   Server    │    │  Generator  │   │
+│  │  │  ┌───────┐  │    │  ┌───────┐  │    │             │    │             │   │
+│  │  │  │Service│  │    │  │TrackPy│  │    │  ┌───────┐  │    │  ┌───────┐  │   │
+│  │  │  │Manager│  │    │  │Engine │  │    │  │Serial │  │    │  │CUDA   │  │   │
+│  │  │  └───────┘  │    │  │:50052 │  │    │  │Bridge │  │    │  │Engine │  │   │
+│  │  │             │    │  └───────┘  │    │  │:50051 │  │    │  │:50053 │  │   │
+│  │  └─────────────┘    └─────────────┘    │  └───────┘  │    │  └───────┘  │   │
 │  │                             ▲           └─────────────┘    └─────────────┘  │
 │  │                             │                  │                   │        │
 │  │                             │                  │ USB Serial        │        │
@@ -50,66 +50,66 @@ The Tweezer Control System follows a distributed microservices architecture acro
 │  │                             │           └─────────────┘            │        │
 │  └─────────────────────────────┼──────────────────────────────────────┼────────┤
 │                                │                                      │        │
-│                                │ 10 Gigabit LAN                       │ 10G LAN│
+│                                │ Direct Ethernet Connection           │ Direct │
 │  ══════════════════════════════╪══════════════════════════════════════╪════════│
 │                                │                                      │        │
 │  ┌─────────────────────────────┼──────────────────────────────────────┼────────┤
 │  │                    CAMERA PC (Image Acquisition)                   │        │
 │  │                                │                                   │        │
-│  │  ┌─────────────┐    ┌─────────▼──────┐    ┌─────────────┐         │        │
-│  │  │  Hamamatsu  │    │     Image      │    │    Save     │         │        │
+│  │  ┌─────────────┐    ┌─────────▼──────┐    ┌─────────────┐          │        │
+│  │  │  Hamamatsu  │    │     Image      │    │    Save     │          │        │
 │  │  │   Camera    │───▶│    Watcher     │    │ Compressed  │         │        │
-│  │  │             │    │                │    │   Server    │         │        │
-│  │  │  ┌───────┐  │    │  ┌───────────┐ │    │  ┌───────┐  │         │        │
-│  │  │  │CMOS   │  │    │  │gRPC Client│ │    │  │TIFF   │  │         │        │
-│  │  │  │Sensor │  │    │  │→:50052    │ │    │  │→JPEG  │  │         │        │
-│  │  │  └───────┘  │    │  │Watch TIFF │ │    │  │-XL    │  │         │        │
-│  │  │             │    │  │RAMdisk    │ │    │  │Watch  │  │         │        │
-│  │  └─────────────┘    │  └───────────┘ │    │  │RAMdisk│  │         │        │
-│  │         │           └────────────────┘    │  └───────┘  │         │        │
-│  │    Camera Software          ▲             └─────────────┘         │        │
+│  │  │             │    │                │    │   Server    │          │        │
+│  │  │  ┌───────┐  │    │  ┌───────────┐ │    │  ┌───────┐  │          │        │
+│  │  │  │CMOS   │  │    │  │gRPC Client│ │    │  │TIFF   │  │          │        │
+│  │  │  │Sensor │  │    │  │→:50052    │ │    │  │→JPEG  │  │          │        │
+│  │  │  └───────┘  │    │  │Watch TIFF │ │    │  │-XL    │  │          │        │
+│  │  │             │    │  │RAMdisk    │ │    │  │Watch  │  │          │        │
+│  │  └─────────────┘    │  └───────────┘ │    │  │RAMdisk│  │          │        │
+│  │         │           └────────────────┘    │  └───────┘  │          │        │
+│  │    Camera Software          ▲             └─────────────┘          │        │
 │  │         │                   │                     │                │        │
 │  │         ▼                   │                     ▼                │        │
-│  │  ┌─────────────┐            │            ┌─────────────┐          │        │
-│  │  │  RAMdisk    │────────────┘            │ Permanent   │          │        │
-│  │  │  (TIFF)     │                         │  Storage    │          │        │
-│  │  │  Temporary  │◀────────────────────────│ (JPEG-XL)   │          │        │
-│  │  └─────────────┘   save when requested   └─────────────┘          │        │
+│  │  ┌─────────────┐            │            ┌─────────────┐           │        │
+│  │  │  RAMdisk    │────────────┘            │ Permanent   │           │        │
+│  │  │  (TIFF)     │                         │  Storage    │           │        │
+│  │  │  Temporary  │◀────────────────────────│ (JPEG-XL)   │           │        │
+│  │  └─────────────┘   save when requested   └─────────────┘           │        │
 │  └─────────────────────────────────────────────────────────────────────────────┤
 │                                                                        │        │
 │  ══════════════════════════════════════════════════════════════════════════════│
 │                                                                        │        │
 │  ┌─────────────────────────────────────────────────────────────────────────────┤
 │  │                        SLM PC (Hologram Display)                            │
-│  │                                                                    │        │
-│  │  ┌──────────────────────────────────────────────────────┐         │        │
-│  │  │                   SLM Driver Service                 │         │        │
-│  │  │                                                       │         │        │
-│  │  │  ┌─────────────────┐    ┌────────────────────────┐   │         │        │
-│  │  │  │ gRPC Server     │◀───┤  Generator (:50053)    │◀──┼─────────┘        │
-│  │  │  │ Receives        │    │  on Main PC            │   │                  │
-│  │  │  │ Holograms       │    └────────────────────────┘   │                  │
-│  │  │  │ :50051          │                                 │                  │
-│  │  │  └─────────────────┘                                 │                  │
-│  │  │         │                                             │                  │
-│  │  │         ▼                                             │                  │
-│  │  │  ┌─────────────────┐    ┌─────────────┐              │                  │
-│  │  │  │ SLM Hardware    │    │    SLM      │              │                  │
+│  │                                                                     │       │
+│  │  ┌──────────────────────────────────────────────────────┐           │       │
+│  │  │                   SLM Driver Service                 │           │       │
+│  │  │                                                       │          │       │
+│  │  │  ┌─────────────────┐    ┌────────────────────────┐   │           │       │
+│  │  │  │ gRPC Server     │◀───┤  Generator (:50053)    │◀──┼──────────┘       │
+│  │  │  │ Receives        │    │  on Main PC            │   │                   │
+│  │  │  │ Holograms       │    └────────────────────────┘   │                   │
+│  │  │  │ :50051          │                                 │                   │
+│  │  │  └─────────────────┘                                 │                   │
+│  │  │         │                                            │                   │
+│  │  │         ▼                                            │                   │
+│  │  │  ┌─────────────────┐    ┌─────────────┐              │                   │
+│  │  │  │ SLM Hardware    │    │    SLM      │              │                   │
 │  │  │  │ Driver          │───▶│  Display    │              │                  │
-│  │  │  │ (PCIE)          │    │  Hardware   │              │                  │
-│  │  │  │                 │    │  ┌───────┐  │              │                  │
-│  │  │  │                 │    │  │Spatial│  │              │                  │
-│  │  │  │                 │    │  │Light  │  │              │                  │
-│  │  │  │                 │    │  │Mod.   │  │              │                  │
-│  │  │  └─────────────────┘    │  └───────┘  │              │                  │
-│  │  │                         └─────────────┘              │                  │
-│  │  └──────────────────────────────────────────────────────┘                  │
+│  │  │  │ (PCIE)          │    │  Hardware   │              │                   │
+│  │  │  │                 │    │  ┌───────┐  │              │                   │
+│  │  │  │                 │    │  │Spatial│  │              │                   │
+│  │  │  │                 │    │  │Light  │  │              │                   │
+│  │  │  │                 │    │  │Mod.   │  │              │                   │
+│  │  │  └─────────────────┘    │  └───────┘  │              │                   │
+│  │  │                         └─────────────┘              │                   │
+│  │  └──────────────────────────────────────────────────────┘                   │
 │  └─────────────────────────────────────────────────────────────────────────────┘
-│                                                                                 │
+│                                                                                │
 │  Key Data Flows:                                                               │
-│  1. Camera → RAMdisk (TIFF) → ImageWatcher → Main PC Image Server (10G LAN)   │
+│  1. Camera → RAMdisk (TIFF) → ImageWatcher → Main PC (Direct Connection)       │
 │  2. Dashboard → Image Server → Get tracked particles                           │
-│  3. Dashboard → SLM Generator → SLM Driver PC → SLM Hardware (10G LAN)         │
+│  3. Dashboard → SLM Generator → SLM Driver PC → SLM (Direct Connection)        │
 │  4. Dashboard → Arduino Server → Arduino Due (USB Serial)                      │
 │  5. RAMdisk (TIFF) → save_compressed_server → Permanent Storage (JPEG-XL)      │
 └─────────────────────────────────────────────────────────────────────────────────┘
@@ -137,21 +137,22 @@ pip install -r env/requirements.txt
 
 ### 2. Hardware Connections
 
-The system uses a **distributed three-PC architecture** connected via 10 Gigabit Ethernet:
+The system uses a **distributed three-PC architecture** connected via direct Ethernet connections:
 
 ```
 Main Control PC:
   - Arduino Due → USB Serial (laser, heater, sensors)
-  - 10G Ethernet → Switch
+  - Direct Ethernet → Camera PC
+  - Direct Ethernet → SLM PC
 
 Camera PC:
   - Hamamatsu Camera → Direct connection
   - Camera Software → RAMdisk (TIFF images)
-  - 10G Ethernet → Switch
+  - Direct Ethernet → Main Control PC
 
 SLM PC:
-  - SLM Hardware → PCIE connection
-  - 10G Ethernet → Switch
+  - SLM Hardware → PCIE adapter
+  - Direct Ethernet → Main Control PC
 
 Power Connections:
   - Laser → Arduino DAC0 (Pin 66)
@@ -159,7 +160,7 @@ Power Connections:
   - Environment Sensor (SHT3) → Arduino I2C
 ```
 
-**Note**: See `GUI/services_config.yaml` for IP addresses and network topology.
+**Note**: PCs are connected via direct Ethernet connections (not through a network switch). See `GUI/services_config.yaml` for IP addresses and network topology.
 
 ### 3. Service Startup
 
@@ -229,7 +230,7 @@ Hardware interface for precision control of:
 - Serial communication with CRC error checking
 
 **Key Features:**
-- ~ millisecond response time
+- Millisecond-level response latency
 - CRC-8 error detection
 - Streaming gRPC interface on port 50051
 - 12-bit DAC/ADC resolution
@@ -238,12 +239,12 @@ Hardware interface for precision control of:
 ### Camera Module (`Camera/`)
 **Location**: Distributed across Camera PC and Main Control PC
 
-- **Camera PC**: Hamamatsu camera → RAMdisk (TIFF) → ImageWatcher (sends via 10G LAN) + save_compressed_server (TIFF→JPEG-XL)
+- **Camera PC**: Hamamatsu camera → RAMdisk (TIFF) → ImageWatcher (sends via direct connection) + save_compressed_server (TIFF→JPEG-XL)
 - **Main Control PC**: ImageServer_with_track.py receives images and performs TrackPy tracking
 
 **Key Features:**
-- 100+ fps tracking performance
-- Tile-based processing for large images (32 processes)
+- Tracking latency: ~40ms for 1152x1152 images with ~3500 particles
+- Tile-based parallel processing (32 AMD EPYC gen 2 cores)
 - RAMdisk-based image capture on Camera PC
 - Lossless JPEG-XL compression for permanent storage
 - Sub-pixel tracking accuracy with TrackPy
@@ -268,54 +269,45 @@ Centralized control dashboard for entire distributed system:
 **Location**: Distributed between Main Control PC and SLM PC
 
 - **Main Control PC**: generator_service.py (CUDA hologram generation on port 50053)
-- **SLM PC**: slm_service.py (hardware driver receiving holograms, connected via PCIE)
+- **SLM PC**: slm_service.py (hardware driver receiving holograms, connected via PCIE adapter)
 
 **Key Features:**
-- GPU-accelerated FFT on Main PC (RTX 4070/A4000)
-- Sub-frame latency updates
+- GPU-accelerated FFT on Main PC (A4000 GPU)
+- Hologram streaming at up to 200 fps (with iteration=2 setting)
+- SLM hardware maximum: 300 fps (generator limited by A4000 GPU)
 - Gerchberg-Saxton algorithm for hologram generation
-- SLM hardware connected via PCIE on dedicated SLM PC
-- 10 Gigabit LAN communication between generator and driver
+- SLM hardware connected via PCIE adapter on dedicated SLM PC
+- Direct Ethernet connection between generator and driver PCs
 
 ## 💻 Hardware Requirements
 
 ### System Topology
 
-The system requires **three separate PCs** connected via **10 Gigabit Ethernet**:
+The system requires **three separate PCs** connected via **direct Ethernet connections**:
 
 #### Main Control PC
 - **Purpose**: Dashboard, Image Tracker, SLM Generator, Arduino Control
-- **CPU**: Intel i7-12700K / AMD Ryzen 7 5800X (multi-core for tracking)
-- **RAM**: 32 GB DDR4-3200 (for trackpy processing)
-- **GPU**: NVIDIA RTX 4070 / A4000 (12GB VRAM for hologram generation)
-- **Storage**: 1TB NVMe SSD
-- **Network**: 10 Gigabit Ethernet (for camera and SLM communication)
 - **USB**: 1x USB port for Arduino Due connection
+- **Network**: Direct Ethernet connections to Camera PC and SLM PC
 
 #### Camera PC
 - **Purpose**: Hamamatsu Camera Control, Image Watcher, Save Compressed Server
 - **Connection**: Hamamatsu camera connected directly
-- **CPU**: Intel i5-8400+ (for image watcher and compression)
-- **RAM**: 32 GB+ (RAMdisk for TIFF images)
 - **Storage**: 
-  - RAMdisk: 16GB+ for temporary TIFF storage
-  - Permanent: 4TB+ NVMe/SSD for compressed JPEG-XL storage
-- **Network**: 10 Gigabit Ethernet (sends images to Main PC)
-- **Camera**: Hamamatsu camera interface (depends on camera model)
+  - RAMdisk for temporary TIFF storage
+  - Permanent storage for compressed JPEG-XL
+- **Network**: Direct Ethernet connection to Main Control PC
+- **Camera**: Hamamatsu camera interface
 
 #### SLM PC
 - **Purpose**: SLM Hardware Driver
-- **Connection**: SLM connected via PCIE
-- **CPU**: Intel i5+ (minimal processing)
-- **RAM**: 8 GB+ DDR4
-- **GPU**: Not required (SLM uses PCIE connection)
-- **Storage**: 256GB SSD
-- **Network**: 10 Gigabit Ethernet (receives holograms from Main PC)
-- **PCIE**: SLM hardware connection
+- **Connection**: SLM connected via PCIE adapter
+- **Network**: Direct Ethernet connection to Main Control PC
+- **PCIE**: SLM hardware connection via PCIE adapter
 
 ### Network Requirements
 
-- **10 Gigabit Ethernet Switch** connecting all three PCs
+- **Direct Ethernet connections** between PCs (not through a switch)
 - Low-latency network configuration for real-time control
 - See `GUI/services_config.yaml` for IP topology
 
@@ -325,7 +317,7 @@ The system requires **three separate PCs** connected via **10 Gigabit Ethernet**
 |-----------|-----------|-------------|
 | **Arduino Due** | USB Serial → Main PC | 12-bit DAC for laser/heater control |
 | **Hamamatsu Camera** | Direct → Camera PC | Images dumped to RAMdisk |
-| **SLM Hardware** | PCIE → SLM PC | Spatial Light Modulator |
+| **SLM Hardware** | PCIE adapter → SLM PC | Spatial Light Modulator |
 | **Laser** | DAC0 (Arduino Due Pin 66) | Controlled via Arduino |
 | **Objective Heater** | DAC1 (Arduino Due Pin 67) | Controlled via Arduino |
 | **Environment Sensor** | I2C (SHT3 → Arduino Due) | Temperature/Humidity monitoring |
@@ -339,22 +331,23 @@ The system requires **three separate PCs** connected via **10 Gigabit Ethernet**
 │                    SYSTEM LATENCIES                        │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  Arduino Command Processing:        < 1 ms                 │
-│  ├─ Serial communication:           ~0.2 ms                │
-│  ├─ Command execution:              ~0.1 ms                │
-│  └─ Response transmission:          ~0.1 ms                │
+│  Arduino Command Processing:        millisecond-level      │
+│  ├─ Serial communication                                   │
+│  ├─ Command execution                                      │
+│  └─ Response transmission                                  │
 │                                                             │
-│  Camera Frame Processing:           5-10 ms                │
-│  ├─ Image acquisition:              ~2 ms                  │
-│  ├─ Particle detection:             ~3 ms                  │
-│  └─ Result transmission:            ~1 ms                  │
+│  Camera Frame Processing:           ~40 ms                 │
+│  ├─ Image size: 1152x1152                                  │
+│  ├─ Particle count: ~3500 particles                        │
+│  └─ Processing: 32 AMD EPYC gen 2 cores                    │
 │                                                             │
-│  SLM Hologram Update:               1-5 ms                 │
-│  ├─ Pattern generation (GPU):       ~1 ms                  │
-│  ├─ Memory transfer:                ~0.5 ms                │
-│  └─ Display refresh:                ~3 ms                  │
+│  SLM Hologram Update:               200 fps (5 ms/frame)   │
+│  ├─ Hologram generation (GPU)                              │
+│  ├─ Network transfer                                       │
+│  └─ Display refresh                                        │
+│  └─ Note: SLM hardware max 300 fps, limited by generator   │
 │                                                             │
-│  End-to-End Response:               10-20 ms               │
+│  End-to-End Response:               ~40-50 ms              │
 │  (Detection → SLM update)                                  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -363,10 +356,11 @@ The system requires **three separate PCs** connected via **10 Gigabit Ethernet**
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| **Image Processing** | 100+ fps | Dependent on image size |
-| **Particle Tracking** | 1000+ particles/frame | TrackPy optimized |
-| **Arduino Commands** | 1000+ Hz | Streaming protocol |
-| **SLM Updates** | 200+ Hz | GPU memory permitting |
+| **Particle Tracking** | ~40 ms latency | 1152x1152 images, ~3500 particles |
+| **Tracking Hardware** | 32 cores | AMD EPYC gen 2 processors |
+| **Arduino Commands** | millisecond-level | Streaming protocol |
+| **SLM Updates** | 200 fps (iteration=2) | Generator limited (A4000 GPU) |
+| **SLM Hardware Max** | 300 fps | PCIE adapter connection |
 | **Data Logging** | 1 MB/s | Compressed HDF5 |
 
 ## 🔍 Data Flow Architecture
