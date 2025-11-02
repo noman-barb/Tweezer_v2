@@ -4021,8 +4021,18 @@ def _on_experiment_script_start(sender: int, app_data: Any, user_data: Aggregate
         logging.warning("No experiment script selected")
         return
     
+    # Collect parameter values from UI before starting script
+    params_to_apply = {}
+    if controller.ui.experiment_param_widgets:
+        for param_name, widget_id in controller.ui.experiment_param_widgets.items():
+            if dpg.does_item_exist(widget_id):
+                value = dpg.get_value(widget_id)
+                params_to_apply[param_name] = value
+                logging.debug(f"Collected parameter {param_name} = {value}")
+    
     ctx = controller._build_experiment_context()
-    success = controller.script_manager.start_script(script_name, ctx)
+    # Pass initial parameters to start_script so they're applied before setup()
+    success = controller.script_manager.start_script(script_name, ctx, initial_params=params_to_apply if params_to_apply else None)
     
     if success:
         logging.info(f"Started experiment script: {script_name}")

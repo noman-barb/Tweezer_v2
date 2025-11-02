@@ -10,7 +10,7 @@ import inspect
 import sys
 import traceback
 from pathlib import Path
-from typing import Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 from base_script import ExperimentScript, ExperimentContext
 
 
@@ -161,13 +161,14 @@ class ScriptManager:
             print(f"Error instantiating script '{script_name}': {e}")
             return None
     
-    def start_script(self, script_name: str, ctx: ExperimentContext) -> bool:
+    def start_script(self, script_name: str, ctx: ExperimentContext, initial_params: Optional[Dict[str, Any]] = None) -> bool:
         """
         Start executing a script.
         
         Args:
             script_name: Name of the script to start
             ctx: Experiment context to pass to setup
+            initial_params: Optional dictionary of initial parameter values to set before setup
             
         Returns:
             True if script started successfully, False otherwise
@@ -182,6 +183,16 @@ class ScriptManager:
         if not script:
             ctx.log(f"Failed to load script: {script_name}", "ERROR")
             return False
+        
+        # Apply initial parameters before setup
+        if initial_params:
+            params_applied = 0
+            for param_name, value in initial_params.items():
+                if script.set_param_value(param_name, value):
+                    params_applied += 1
+                    ctx.log(f"Set parameter {param_name} = {value}", "DEBUG")
+            if params_applied > 0:
+                ctx.log(f"Applied {params_applied} initial parameters", "INFO")
         
         # Run setup
         try:
