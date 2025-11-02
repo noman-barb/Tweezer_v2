@@ -1,0 +1,9 @@
+# Ignore logs folder
+logs/
+
+# Ignore TIFF image files
+*.tiff
+*.tif
+
+# Ignore HDF5 files
+*.h5
