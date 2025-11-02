@@ -229,7 +229,7 @@ Hardware interface for precision control of:
 - Serial communication with CRC error checking
 
 **Key Features:**
-- Sub-millisecond response time
+- ~ millisecond response time
 - CRC-8 error detection
 - Streaming gRPC interface on port 50051
 - 12-bit DAC/ADC resolution

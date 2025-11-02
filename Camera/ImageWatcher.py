@@ -138,13 +138,12 @@ class ImageWatcher:
         self._rpc_timeout = rpc_timeout
         self._resend_on_change = resend_on_change
         self._delete_after_upload = delete_after_upload
-        self._max_in_flight = max(1, max_in_flight)
+        if max_in_flight > 1:
+            LOGGER.debug(
+                "Ignoring max_in_flight=%d; fire-and-forget mode processes one upload at a time", max_in_flight
+            )
         self._known: Dict[Path, Tuple[int, int]] = {}
-        self._in_flight: List[Tuple[int, grpc.Future, Path, Tuple[int, int], int, float]] = []  # type: ignore[type-arg] # added timestamp
         self._next_sequence = max(0, sequence_start)
-        self._next_commit = self._next_sequence
-        self._pending_results: Dict[int, Tuple[bool, str, Path, Tuple[int, int], int]] = {}
-        self._in_flight_timeout = rpc_timeout * 2  # Cancel in-flight uploads after 2x RPC timeout
         self._use_watchdog = bool(use_watchdog and Observer is not None)
         if use_watchdog and Observer is None:
             LOGGER.warning("watchdog package not available; falling back to polling mode")
@@ -155,20 +154,20 @@ class ImageWatcher:
         self._grpc_options = grpc_options or []
         self._grpc_connected = stub is not None
         self._last_connection_attempt = 0.0
-        self._connection_retry_interval = 5.0  # Retry every 5 seconds
+        self._connection_retry_interval = 1.0  # Retry every second
         self._reconnect_thread: Optional[threading.Thread] = None
         self._stop_reconnect = threading.Event()
         self._connection_lock = threading.Lock()
 
     def run(self) -> None:
         LOGGER.info("Watching %s for TIFF images", self._directory)
-        LOGGER.info("Max concurrent uploads: %d", self._max_in_flight)
-        LOGGER.info("Starting sequence number: %d", self._next_commit)
+        LOGGER.info("Starting sequence number: %d", self._next_sequence)
         if not self._grpc_connected:
-            LOGGER.warning("Starting in offline mode - will retry gRPC connection periodically")
-            # Start reconnection thread
+            LOGGER.warning("Starting in offline mode - will retry gRPC connection every second")
             self._start_reconnect_thread()
-        
+
+        self._purge_startup_files()
+
         try:
             if self._use_watchdog:
                 self._run_with_watchdog()
@@ -229,25 +228,10 @@ class ImageWatcher:
                 self._stub = ImageExchangeStub(self._channel)
                 self._grpc_connected = True
                 LOGGER.info("Successfully reconnected to gRPC server")
-                
-                # Fire-and-forget: Clear all state and start fresh
-                if self._in_flight:
-                    LOGGER.info("Dropping %d in-flight uploads (fire-and-forget mode)", len(self._in_flight))
-                    for _, future, path, _, _, _ in self._in_flight:
-                        future.cancel()
-                        if path.exists() and self._delete_after_upload:
-                            try:
-                                path.unlink(missing_ok=True)
-                            except Exception:
-                                pass
-                    self._in_flight.clear()
-                if self._pending_results:
-                    LOGGER.info("Dropping %d pending results (fire-and-forget mode)", len(self._pending_results))
-                    self._pending_results.clear()
                 if self._known:
-                    LOGGER.info("Clearing %d known files (fire-and-forget mode)", len(self._known))
+                    LOGGER.debug("Clearing %d cached signatures after reconnect", len(self._known))
                     self._known.clear()
-                
+
                 # Fire-and-forget: Always start fresh from sequence 1 or server's state
                 try:
                     latest = self._stub.GetLatestImage(LatestImageRequest(), timeout=self._rpc_timeout)
@@ -256,16 +240,14 @@ class ImageWatcher:
                         expected_next = latest_sequence + 1
                         LOGGER.info("Starting fresh from server sequence %d (fire-and-forget mode)", expected_next)
                         self._next_sequence = expected_next
-                        self._next_commit = expected_next
                     else:
                         LOGGER.info("Starting fresh from sequence 1 (fire-and-forget mode)")
                         self._next_sequence = 1
-                        self._next_commit = 1
                 except grpc.RpcError as exc:
                     LOGGER.warning("Could not query latest sequence: %s - starting from 1", exc)
                     self._next_sequence = 1
-                    self._next_commit = 1
-                
+
+                self._purge_all_images("reconnect")
                 return True
             except (grpc.FutureTimeoutError, grpc.RpcError) as exc:
                 LOGGER.warning("Failed to reconnect to gRPC server: %s", exc)
@@ -280,20 +262,12 @@ class ImageWatcher:
         while True:
             try:
                 self._scan_once()
-                self._drain_in_flight()
             except grpc.RpcError as exc:  # recoverable RPC failures
                 LOGGER.error("gRPC failure: %s", exc)
-                with self._connection_lock:
-                    self._grpc_connected = False
-                # Start reconnect thread if not running
-                if not self._grpc_connected:
-                    self._start_reconnect_thread()
-                time.sleep(self._poll_interval)
+                self._mark_connection_lost()
             except Exception:  # pragma: no cover - log unexpected issues
                 LOGGER.exception("Unexpected watcher error")
-                time.sleep(self._poll_interval)
             time.sleep(self._poll_interval)
-            self._drain_in_flight()
 
     def _run_with_watchdog(self) -> None:
         if Observer is None or FileSystemEventHandler is None:
@@ -321,7 +295,6 @@ class ImageWatcher:
                         self._process_candidate(Path(candidate))
                     except Exception:  # pragma: no cover - unexpected event processing failure
                         LOGGER.exception("Failed to process event for %s", candidate)
-                self._drain_in_flight()
         except KeyboardInterrupt:
             raise
         finally:
@@ -330,84 +303,68 @@ class ImageWatcher:
             self._observer = None
 
     def _scan_once(self) -> None:
-        self._drain_in_flight()
         for candidate in self._iter_image_files():
             self._process_candidate(candidate)
-        self._drain_in_flight()
 
     def _process_candidate(self, candidate: Path) -> None:
         if not candidate.exists():
             return
+        if not self._wait_for_settle(candidate):
+            LOGGER.debug("File %s did not settle; dropping", candidate.name)
+            self._delete_file(candidate, "unsettled")
+            return
+
         signature = self._stat_signature(candidate)
         if signature is None:
             return
-        if not self._resend_on_change and candidate in self._known:
+        if not self._resend_on_change and self._known.get(candidate) == signature:
             return
-        if candidate in self._known and self._known[candidate] == signature:
-            return
-        
-        # If gRPC is not connected, delete the file (real-time streaming - discard stale data)
+
         with self._connection_lock:
             is_connected = self._grpc_connected
-        
-        if not is_connected:
-            LOGGER.warning("gRPC not available - deleting %s (real-time mode)", candidate.name)
-            try:
-                candidate.unlink(missing_ok=True)
-                LOGGER.info("Deleted %s (no gRPC connection)", candidate.name)
-            except Exception as exc:
-                LOGGER.error("Failed to delete %s: %s", candidate.name, exc)
-            self._known.pop(candidate, None)
-            # Ensure reconnect thread is running
-            self._start_reconnect_thread()
+            stub = self._stub
+
+        if not is_connected or stub is None:
+            self._handle_offline_file(candidate)
             return
-        
-        # Fire-and-forget: if queue is full, cancel oldest in-flight upload
-        if len(self._in_flight) >= self._max_in_flight:
-            # Drop the oldest in-flight request
-            old_seq, old_future, old_path, old_sig, old_size, old_time = self._in_flight.pop(0)
-            old_future.cancel()
-            LOGGER.warning("Dropped in-flight upload for %s (seq %d) - queue full, fire-and-forget mode", 
-                          old_path.name, old_seq)
-            # Delete the old file if it still exists
-            if old_path.exists() and self._delete_after_upload:
-                try:
-                    old_path.unlink(missing_ok=True)
-                    LOGGER.debug("Deleted dropped file %s", old_path.name)
-                except Exception:
-                    pass
-        if not self._wait_for_settle(candidate):
-            # Fire-and-forget: if file doesn't settle quickly, delete it
-            LOGGER.debug("File %s didn't settle, deleting (fire-and-forget mode)", candidate.name)
-            try:
-                candidate.unlink(missing_ok=True)
-            except Exception:
-                pass
-            return
+
         sequence = self._next_sequence
-        payload = self._build_payload(candidate, sequence)
+        try:
+            payload = self._build_payload(candidate, sequence)
+        except FileNotFoundError:
+            LOGGER.debug("File %s disappeared before upload", candidate.name)
+            return
+        except OSError as exc:
+            LOGGER.warning("Unable to read %s; dropping: %s", candidate.name, exc)
+            self._delete_file(candidate, "read-error")
+            return
+
+        payload_size = len(payload.data)
         post_signature = self._stat_signature(candidate)
         if post_signature is not None:
             signature = post_signature
+
         try:
-            assert self._stub is not None  # Should be non-None if _grpc_connected is True
-            future = self._stub.UploadImageFuture(payload, timeout=self._rpc_timeout)
+            ack = stub.UploadImage(payload, timeout=self._rpc_timeout)
         except grpc.RpcError as exc:
-            LOGGER.error("Unable to enqueue %s for upload: %s", candidate.name, exc)
-            self._known.pop(candidate, None)
-            with self._connection_lock:
-                self._grpc_connected = False
-            LOGGER.warning("gRPC connection lost - deleting %s (real-time mode)", candidate.name)
-            try:
-                candidate.unlink(missing_ok=True)
-            except Exception as delete_exc:
-                LOGGER.error("Failed to delete %s: %s", candidate.name, delete_exc)
-            # Start reconnect thread
-            self._start_reconnect_thread()
+            LOGGER.error("Upload failed for %s: %s", candidate.name, exc)
+            self._mark_connection_lost()
+            self._handle_offline_file(candidate)
             return
-        self._next_sequence += 1
-        self._known[candidate] = signature
-        self._in_flight.append((sequence, future, candidate, signature, len(payload.data), time.time()))
+
+        self._next_sequence = sequence + 1
+
+        if not isinstance(ack, UploadAck):
+            self._handle_failed_upload(candidate, sequence, payload_size, "unexpected response type")
+            return
+
+        if not ack.ok:
+            message = ack.message or "upload rejected"
+            self._handle_failed_upload(candidate, sequence, payload_size, message)
+            return
+
+        message = ack.message or "stored"
+        self._handle_success(candidate, sequence, payload_size, message, signature)
 
     def _iter_image_files(self):
         yield from self._directory.glob("*.tif")
@@ -452,132 +409,79 @@ class ImageWatcher:
             sequence=sequence,
         )
 
-    def _drain_in_flight(self, block: bool = False) -> None:
-        current_time = time.time()
-        while True:
-            progressed = False
-            for entry in list(self._in_flight):
-                sequence, future, path, signature, payload_size, start_time = entry
-                # Fire-and-forget: cancel stale uploads
-                if current_time - start_time > self._in_flight_timeout:
-                    future.cancel()
-                    self._in_flight.remove(entry)
-                    LOGGER.warning("Cancelled stale upload for %s (seq %d, %.1fs old) - fire-and-forget mode",
-                                 path.name, sequence, current_time - start_time)
-                    if path.exists() and self._delete_after_upload:
-                        try:
-                            path.unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                    progressed = True
-                elif future.done():
-                    self._handle_future(sequence, future, path, signature, payload_size)
-                    self._in_flight.remove(entry)
-                    progressed = True
-            if progressed:
-                continue
-            if not block or not self._in_flight:
-                break
-            sequence, future, path, signature, payload_size, start_time = self._in_flight.pop(0)
-            self._handle_future(sequence, future, path, signature, payload_size)
+    def _purge_startup_files(self) -> None:
+        self._purge_all_images("startup")
 
-    def _handle_future(
+    def _mark_connection_lost(self) -> None:
+        with self._connection_lock:
+            was_connected = self._grpc_connected
+            self._grpc_connected = False
+        if was_connected:
+            LOGGER.warning("gRPC connection lost; entering drop mode")
+            self._purge_all_images("connection-lost")
+        self._start_reconnect_thread()
+
+    def _handle_offline_file(self, path: Path) -> None:
+        LOGGER.warning("Dropping %s because gRPC is offline", path.name)
+        self._purge_all_images("offline")
+        self._start_reconnect_thread()
+
+    def _handle_failed_upload(self, path: Path, sequence: int, payload_size: int, reason: str) -> None:
+        LOGGER.warning(
+            "Upload %s (seq %d, %d bytes) failed: %s - dropping",
+            path.name,
+            sequence,
+            payload_size,
+            reason,
+        )
+        self._delete_file(path, f"upload-failed:{reason}")
+
+    def _handle_success(
         self,
-        sequence: int,
-        future: grpc.Future,  # type: ignore[type-arg]
         path: Path,
-        signature: Tuple[int, int],
-        payload_size: int,
-    ) -> None:
-        success = True
-        message = ""
-        try:
-            ack = future.result()
-        except grpc.RpcError as exc:
-            success = False
-            message = str(exc)
-            # Mark connection as lost on RPC error
-            with self._connection_lock:
-                self._grpc_connected = False
-            LOGGER.warning("gRPC connection lost during upload")
-            # Start reconnect thread
-            self._start_reconnect_thread()
-        else:
-            if not isinstance(ack, UploadAck):
-                success = False
-                message = f"unexpected response type {type(ack)!r}"
-            elif not ack.ok:
-                success = False
-                message = ack.message or "upload rejected"
-            else:
-                message = ack.message or "stored"
-                # Treat "queued" as success - server accepted it and will process in order
-                # This is expected behavior when images arrive out of sequence
-
-        self._pending_results[sequence] = (success, message, path, signature, payload_size)
-        self._commit_ready()
-
-    def _commit_ready(self) -> None:
-        while True:
-            pending = self._pending_results.get(self._next_commit)
-            if pending is None:
-                break
-            success, message, path, signature, payload_size = self._pending_results.pop(self._next_commit)
-            sequence = self._next_commit
-            if success:
-                self._finalize_success(sequence, path, signature, payload_size, message)
-            else:
-                # Fire-and-forget: just log the error and delete the file, no retry
-                reason = message or "unknown error"
-                LOGGER.warning("Upload %s (seq %d) failed: %s - discarding (fire-and-forget mode)", 
-                             path.name, sequence, reason)
-                # Delete the file regardless of failure reason
-                if self._delete_after_upload:
-                    try:
-                        path.unlink(missing_ok=True)
-                        LOGGER.debug("Deleted failed upload %s", path.name)
-                    except Exception:
-                        pass
-                self._known.pop(path, None)
-            self._next_commit += 1
-
-    def _finalize_success(
-        self,
         sequence: int,
-        path: Path,
-        signature: Tuple[int, int],
         payload_size: int,
         message: str,
+        signature: Tuple[int, int],
     ) -> None:
         log_suffix = f" - {message}" if message else ""
         LOGGER.info("Uploaded %s (seq %d, %d bytes)%s", path.name, sequence, payload_size, log_suffix)
-
         if self._delete_after_upload:
-            self._delete_if_unchanged(path, signature)
+            self._delete_if_unchanged(path, signature, "upload-success")
         else:
             self._known[path] = signature
 
-    def _delete_if_unchanged(self, path: Path, signature: Tuple[int, int], log_prefix: str = "Deleted") -> None:
+    def _purge_all_images(self, reason: str) -> None:
+        paths = list(self._iter_image_files())
+        if not paths:
+            return
+        LOGGER.warning("Purging %d TIFF files (%s)", len(paths), reason)
+        for path in paths:
+            self._delete_file(path, f"{reason}-purge")
+
+    def _delete_file(self, path: Path, reason: str) -> None:
+        try:
+            path.unlink(missing_ok=True)
+            LOGGER.debug("Deleted %s (%s)", path.name, reason)
+        except FileNotFoundError:
+            pass
+        except PermissionError as exc:
+            LOGGER.warning("Unable to delete %s (%s): permission error: %s", path, reason, exc)
+        except OSError as exc:
+            LOGGER.warning("Failed to delete %s (%s): %s", path, reason, exc)
+        finally:
+            self._known.pop(path, None)
+
+    def _delete_if_unchanged(self, path: Path, signature: Tuple[int, int], reason: str) -> None:
         current_signature = self._stat_signature(path)
         if current_signature is None:
             self._known.pop(path, None)
             return
         if current_signature != signature:
-            LOGGER.debug("Skip deleting %s; file changed after upload", path.name)
+            LOGGER.debug("Skip deleting %s; signature changed after %s", path.name, reason)
             self._known[path] = current_signature
             return
-        try:
-            path.unlink(missing_ok=True)
-            LOGGER.debug("%s %s", log_prefix, path.name)
-        except PermissionError:
-            LOGGER.warning("Unable to delete %s (permission error)", path)
-            self._known[path] = signature
-            return
-        except OSError as exc:
-            LOGGER.warning("Failed to delete %s: %s", path, exc)
-            self._known[path] = signature
-            return
-        self._known.pop(path, None)
+        self._delete_file(path, reason)
 
 
 def _is_ramdisk(path: Path) -> bool:
@@ -752,7 +656,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--max-in-flight",
         type=int,
         default=4,
-        help="Maximum number of concurrent uploads (fire-and-forget mode drops old uploads when full)",
+        help="Deprecated; fire-and-forget mode processes one upload at a time",
     )
     parser.add_argument(
         "--sequence-start",

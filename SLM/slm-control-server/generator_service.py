@@ -76,6 +76,24 @@ class GeneratorConfig:
     width: int = 512
     height: int = 512
     iterations: int = 50
+    apodization_enabled: bool = False
+    apodization_strength: float = 0.6
+    z_focus_enabled: bool = False
+    z_focus_offset: float = 0.0
+    z_focus_scale: float = 0.5
+
+
+@dataclass
+class FeatureState:
+    apodization_enabled: bool = False
+    apodization_strength: float = 0.6
+    z_focus_enabled: bool = False
+    z_focus_offset: float = 0.0
+    z_focus_scale: float = 0.5
+
+    def clamp(self) -> None:
+        self.apodization_strength = float(min(max(self.apodization_strength, 0.0), 1.0))
+        self.z_focus_scale = float(max(self.z_focus_scale, 0.0))
 
 
 cuda_code = r"""
@@ -126,7 +144,7 @@ phase: Optional[cp.ndarray] = None
 exp_phase: Optional[cp.ndarray] = None  # Pre-allocated buffer for exp(1j*phase)
 
 
-def gerchberg_saxton_cupy(target_intensity, iterations):
+def gerchberg_saxton_cupy(target_intensity, iterations, defocus_mask=None):
     # Initialize amplitude and phase
 
     global amplitude, fft_real, fft_imag, output_phase, update_phase_kernel, add_spots_kernel, threads_per_block, blocks_per_grid_x, blocks_per_grid_y, blocks_per_grid, fft_field, fft_plan, field, phase, exp_phase
@@ -190,11 +208,15 @@ def gerchberg_saxton_cupy(target_intensity, iterations):
     # Uncomment next line if you want random start each time:
     # cp.random.rand(*amp.shape, out=ph); ph *= 2 * cp.pi
     
+    mask = defocus_mask
+
     for _ in range(iterations):
         # Perform FFT - optimized with in-place operations
         # Compute field = amp * exp(1j * phase)
         cp.exp(1j * ph, out=fld)
         fld *= amp
+        if mask is not None:
+            fld *= mask
 
         # FFT using pre-computed plan (fft is overwritten in-place by reference)
         with plan:
@@ -219,6 +241,13 @@ class HologramGeneratorCupy:
         self.hologram_buffer = None  # Pre-allocated hologram buffer
         self.add_spots_kernel = None  # CUDA kernel for fast spot placement
         self.gs_input_buffer = None  # Optional mixed-precision staging buffer
+        self.apodization_base = None
+        self.apodization_mask = None
+        self._last_apodization_strength: Optional[float] = None
+        self.defocus_grid = None
+        self.defocus_complex = None
+        self._last_defocus_factor: Optional[float] = None
+        self.defocus_phase: Optional[cp.ndarray] = None
 
     def Initialize_HologramGenerator(self, width, height, depth, iterations, RGB):
         self.width = width
@@ -237,6 +266,13 @@ class HologramGeneratorCupy:
         
         # Compile CUDA kernel for fast spot placement
         self.add_spots_kernel = cp.RawKernel(cuda_code, "add_spots_kernel")
+        self.apodization_base = None
+        self.apodization_mask = None
+        self._last_apodization_strength = None
+        self.defocus_grid = None
+        self.defocus_complex = None
+        self._last_defocus_factor = None
+        self.defocus_phase = None
 
     def CalculateAffinePolynomials(self,
                                 CAM_X_0, CAM_Y_0, SLM_X_0, SLM_Y_0,
@@ -255,7 +291,7 @@ class HologramGeneratorCupy:
             affine_y = cp.linalg.solve(A, By)
             self.affine_params = (affine_x, affine_y)
 
-    def Generate_Hologram(self, WFC, x_spots, y_spots, z_spots, I_spots, N_spots, ApplyAffine):
+    def Generate_Hologram(self, WFC, x_spots, y_spots, z_spots, I_spots, N_spots, ApplyAffine, features: FeatureState):
         with self.stream:
             if ApplyAffine and self.affine_params:
                 affine_x, affine_y = self.affine_params
@@ -288,6 +324,10 @@ class HologramGeneratorCupy:
 
             if WFC is not None:
                 hologram += WFC
+
+            mask = self._get_apodization_mask(features)
+            if mask is not None:
+                hologram *= mask
             # Optimized normalization
             max_val = cp.max(hologram)
             if float(max_val) > 0.0:
@@ -299,8 +339,127 @@ class HologramGeneratorCupy:
             else:
                 gs_input = hologram
 
-            gs_hologram = gerchberg_saxton_cupy(gs_input, iterations=self.iterations)
+            if features.z_focus_enabled and z_spots.size > 0:
+                mean_z = float(cp.mean(z_spots))
+            else:
+                mean_z = 0.0
+
+            defocus_mask = self._get_defocus_mask(features, mean_z)
+            defocus_phase = self.defocus_phase if defocus_mask is not None else None
+
+            if defocus_mask is not None:
+                scale = float(max(features.z_focus_scale, 0.0))
+                effective_offset = float(features.z_focus_offset) + float(mean_z)
+                factor = scale * effective_offset
+                METRICS_LOGGER.info(
+                    "Defocus applied: offset=%.4f mean_z=%.4f scale=%.4f factor=%.4f",
+                    float(features.z_focus_offset),
+                    float(mean_z),
+                    scale,
+                    factor,
+                )
+
+            gs_hologram = gerchberg_saxton_cupy(
+                gs_input,
+                iterations=self.iterations,
+                defocus_mask=defocus_mask,
+            )
+            if defocus_phase is not None:
+                hologram = self.hologram_buffer
+                assert hologram is not None
+                cp.copyto(hologram, gs_hologram)
+                hologram += defocus_phase
+                cp.remainder(hologram + cp.pi, 2 * cp.pi, out=hologram)
+                hologram -= cp.pi
+                return hologram
+
             return gs_hologram
+
+    def _get_apodization_mask(self, features: FeatureState) -> Optional[cp.ndarray]:
+        if not features.apodization_enabled:
+            self._last_apodization_strength = None
+            return None
+
+        strength = float(min(max(features.apodization_strength, 0.0), 1.0))
+        if strength <= 1e-6:
+            self._last_apodization_strength = None
+            return None
+
+        if self.apodization_base is None or self.apodization_base.shape != (self.height, self.width):
+            y_window = cp.hanning(self.height).astype(cp.float32)
+            x_window = cp.hanning(self.width).astype(cp.float32)
+            self.apodization_base = cp.outer(y_window, x_window)
+            self.apodization_mask = None
+
+        if self.apodization_mask is None or self._last_apodization_strength != strength:
+            base = cast(cp.ndarray, self.apodization_base)
+            if self.apodization_mask is None:
+                self.apodization_mask = cp.empty_like(base)
+            mask = cast(cp.ndarray, self.apodization_mask)
+            cp.multiply(base, strength, out=mask)
+            if strength < 1.0:
+                mask += (1.0 - strength)
+            self._last_apodization_strength = strength
+
+        return self.apodization_mask
+
+    def _get_defocus_mask(self, features: FeatureState, mean_point_z: float) -> Optional[cp.ndarray]:
+        if not features.z_focus_enabled:
+            self.defocus_complex = None
+            self.defocus_phase = None
+            self._last_defocus_factor = None
+            return None
+
+        scale = float(max(features.z_focus_scale, 0.0))
+        effective_offset = float(features.z_focus_offset) + float(mean_point_z)
+        if scale <= 0.0:
+            self.defocus_complex = None
+            self.defocus_phase = None
+            self._last_defocus_factor = None
+            return None
+
+        factor = scale * effective_offset
+        if abs(factor) <= 1e-6:
+            self.defocus_complex = None
+            self.defocus_phase = None
+            self._last_defocus_factor = None
+            return None
+
+        grid = self._get_defocus_grid()
+        phase_factor = float(math.pi * factor)
+
+        needs_rebuild = (
+            self.defocus_complex is None
+            or self.defocus_complex.shape != grid.shape
+            or self._last_defocus_factor is None
+            or abs(self._last_defocus_factor - phase_factor) > 1e-9
+        )
+
+        if needs_rebuild:
+            if self.defocus_phase is None or self.defocus_phase.shape != grid.shape:
+                self.defocus_phase = cp.empty_like(grid, dtype=cp.float32)
+            phase = cast(cp.ndarray, self.defocus_phase)
+            cp.multiply(grid, phase_factor, out=phase)
+            self.defocus_complex = cp.exp(1j * phase).astype(COMPLEX_DTYPE, copy=False)
+            self._last_defocus_factor = phase_factor
+            METRICS_LOGGER.info(
+                "Defocus mask updated: scale=%.4f offset=%.4f mean_z=%.4f effective=%.4f factor=%.4f",
+                scale,
+                float(features.z_focus_offset),
+                float(mean_point_z),
+                effective_offset,
+                factor,
+            )
+
+        return self.defocus_complex
+
+    def _get_defocus_grid(self) -> cp.ndarray:
+        if self.defocus_grid is None or self.defocus_grid.shape != (self.height, self.width):
+            y = cp.linspace(-1.0, 1.0, self.height, dtype=cp.float32)
+            x = cp.linspace(-1.0, 1.0, self.width, dtype=cp.float32)
+            yy, xx = cp.meshgrid(y, x, indexing="ij")
+            self.defocus_grid = (cp.square(xx) + cp.square(yy)).astype(cp.float32)
+        return cast(cp.ndarray, self.defocus_grid)
 
 
 class GsEngine:
@@ -311,24 +470,55 @@ class GsEngine:
         self._generator = HologramGeneratorCupy()
         self._initialize_generator()
         self._warmed = False
+        self._features = FeatureState(
+            apodization_enabled=config.apodization_enabled,
+            apodization_strength=config.apodization_strength,
+            z_focus_enabled=config.z_focus_enabled,
+            z_focus_offset=config.z_focus_offset,
+            z_focus_scale=config.z_focus_scale,
+        )
+        self._features.clamp()
 
     def update_config(self, config: GeneratorConfig) -> None:
         self._config = config
         self._initialize_generator()
         self._warmed = False
+        self._features = FeatureState(
+            apodization_enabled=config.apodization_enabled,
+            apodization_strength=config.apodization_strength,
+            z_focus_enabled=config.z_focus_enabled,
+            z_focus_offset=config.z_focus_offset,
+            z_focus_scale=config.z_focus_scale,
+        )
+        self._features.clamp()
 
     def generate(self, command: holo_pb2.TweezerCommand) -> bytes:
-        points = command.points
-        if not points:
+        raw_points = list(command.points)
+        if not raw_points:
             return b"\x00" * (self._config.width * self._config.height)
+
+        active_points = []
+        for point in raw_points:
+            if math.isnan(point.x):
+                self._apply_feature_control(point)
+            else:
+                active_points.append(point)
+
+        if not active_points:
+            # Update features even when no traps are requested
+            self._features.clamp()
+            return b"\x00" * (self._config.width * self._config.height)
+
+        feature_state = self._features
+        feature_state.clamp()
 
         apply_affine = self._configure_legacy_affine(command.affine)
 
         with self._generator.stream:
-            x = cp.asarray([p.x for p in points], dtype=cp.float32)
-            y = cp.asarray([p.y for p in points], dtype=cp.float32)
-            z = cp.asarray([p.z for p in points], dtype=cp.float32)
-            intensities = cp.asarray([max(p.intensity, 0.0) for p in points], dtype=cp.float32)
+            x = cp.asarray([p.x for p in active_points], dtype=cp.float32)
+            y = cp.asarray([p.y for p in active_points], dtype=cp.float32)
+            z = cp.asarray([p.z for p in active_points], dtype=cp.float32)
+            intensities = cp.asarray([max(p.intensity, 0.0) for p in active_points], dtype=cp.float32)
 
             if cp.allclose(intensities, 0.0):
                 intensities.fill(1.0)
@@ -340,8 +530,9 @@ class GsEngine:
                 y_spots=y,
                 z_spots=z,
                 I_spots=intensities,
-                N_spots=len(points),
+                N_spots=len(active_points),
                 ApplyAffine=apply_affine,
+                features=feature_state,
             )
 
             hologram_min = cp.min(hologram)
@@ -385,6 +576,16 @@ class GsEngine:
             iterations=self._config.iterations,
             RGB=0,
         )
+
+    def _apply_feature_control(self, point: holo_pb2.TweezerPoint) -> None:
+        control_type = point.y
+        if math.isclose(control_type, 0.0):
+            self._features.apodization_enabled = point.intensity >= 0.0
+            self._features.apodization_strength = abs(point.z)
+        elif math.isclose(control_type, 1.0):
+            self._features.z_focus_enabled = point.intensity >= 0.0
+            self._features.z_focus_offset = point.z
+            self._features.z_focus_scale = abs(point.intensity)
     def _configure_legacy_affine(self, affine: holo_pb2.AffineParameters) -> bool:
         # Map extended AffineParameters fields back into the legacy three-point calibration.
         # Fields are repurposed as follows:

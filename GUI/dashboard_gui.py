@@ -75,6 +75,10 @@ HoloStub = Any
 # SLM Config imports
 sys.path.insert(0, str(_REPO_ROOT / "SLM"))
 from slm_config.slm_config_manager import SlmConfigManager, SlmConfig  # type: ignore  # noqa: E402
+from slm_config.slm_feature_config_manager import (  # type: ignore  # noqa: E402
+    SlmFeatureConfigManager,
+    SlmFeatureConfig,
+)
 
 # Tracking Config imports
 import sys
@@ -117,7 +121,18 @@ class Shtc3Spec:
 class SlmPoint:
     x: float
     y: float
+    z: float
     intensity: float
+
+
+@dataclass
+class SlmFeatureState:
+    apodization_enabled: bool
+    apodization_strength: float
+    z_focus_enabled: bool
+    z_focus_offset: float
+    z_focus_scale: float
+    default_point_z: float
 
 
 @dataclass(frozen=True)
@@ -160,6 +175,18 @@ class AggregateUI:
     slm_circle_color_picker: Optional[int] = None
     slm_circle_size_slider: Optional[int] = None
     slm_circle_thickness_slider: Optional[int] = None
+    feature_apodization_checkbox: Optional[int] = None
+    feature_apodization_strength_slider: Optional[int] = None
+    feature_z_focus_checkbox: Optional[int] = None
+    feature_z_focus_offset_slider: Optional[int] = None
+    feature_z_focus_scale_slider: Optional[int] = None
+    feature_default_point_z_slider: Optional[int] = None
+    feature_config_combo: Optional[int] = None
+    feature_config_save_button: Optional[int] = None
+    feature_config_load_button: Optional[int] = None
+    feature_config_set_default_button: Optional[int] = None
+    feature_config_reset_button: Optional[int] = None
+    feature_config_delete_button: Optional[int] = None
     image_connection_status_label: Optional[int] = None
     due_connection_status_label: Optional[int] = None
     slm_connection_status_label: Optional[int] = None
@@ -597,7 +624,12 @@ class SLMClient:
         except Exception as exc:
             logging.exception("Error consuming SLM responses: %s", exc)
 
-    def send_command(self, points: List[SlmPoint], affine_params: Optional[Dict[str, float]] = None) -> None:
+    def send_command(
+        self,
+        points: List[SlmPoint],
+        affine_params: Optional[Dict[str, float]] = None,
+        feature_state: Optional[SlmFeatureState] = None,
+    ) -> None:
         """Send a tweezer command with points and optional affine parameters."""
         if not self.connected or self._stream_call is None:
             logging.warning("Cannot send command: not connected to SLM")
@@ -620,8 +652,23 @@ class SLMClient:
             point = command.points.add()
             point.x = pt.x
             point.y = pt.y
-            point.z = 0.0
+            point.z = pt.z
             point.intensity = pt.intensity
+
+        if feature_state is not None:
+            apod_strength = max(min(feature_state.apodization_strength, 1.0), 0.0)
+            ctrl_apod = command.points.add()
+            ctrl_apod.x = math.nan
+            ctrl_apod.y = 0.0
+            ctrl_apod.z = apod_strength
+            ctrl_apod.intensity = apod_strength if feature_state.apodization_enabled else -apod_strength
+
+            focus_scale = max(feature_state.z_focus_scale, 0.0)
+            ctrl_focus = command.points.add()
+            ctrl_focus.x = math.nan
+            ctrl_focus.y = 1.0
+            ctrl_focus.z = feature_state.z_focus_offset
+            ctrl_focus.intensity = focus_scale if feature_state.z_focus_enabled else -focus_scale
         
         # Set affine parameters if provided
         if affine_params:
@@ -717,6 +764,7 @@ class AggregateControllerStreaming:
         due_endpoint: EndpointConfig,
         slm_endpoint: EndpointConfig,
         slm_config_manager: SlmConfigManager,
+        slm_feature_config_manager: SlmFeatureConfigManager,
         tracking_config_manager: TrackingConfigManager,
     ) -> None:
         self.image_state = image_state
@@ -746,6 +794,19 @@ class AggregateControllerStreaming:
         # Load current SLM configuration
         current_config = self.slm_config_manager.get_current_config()
         self.slm_affine_params = current_config.get_legacy_params()
+
+        # Feature configuration manager
+        self.slm_feature_config_manager = slm_feature_config_manager
+        current_feature_config = self.slm_feature_config_manager.get_current_config()
+        self.slm_feature_config = SlmFeatureConfig.from_dict(current_feature_config.to_dict())
+        self.slm_feature_state = SlmFeatureState(
+            apodization_enabled=self.slm_feature_config.apodization_enabled,
+            apodization_strength=self.slm_feature_config.apodization_strength,
+            z_focus_enabled=self.slm_feature_config.z_focus_enabled,
+            z_focus_offset=self.slm_feature_config.z_focus_offset,
+            z_focus_scale=self.slm_feature_config.z_focus_scale,
+            default_point_z=self.slm_feature_config.default_point_z,
+        )
         
         # Tracking Configuration Manager
         self.tracking_config_manager = tracking_config_manager
@@ -785,6 +846,7 @@ class AggregateControllerStreaming:
 
     def set_ui(self, ui: AggregateUI) -> None:
         self.ui = ui
+        self._update_feature_controls_ui()
 
     # Connection management
     
@@ -853,7 +915,9 @@ class AggregateControllerStreaming:
     
     def add_point(self, x: float, y: float) -> None:
         """Add a new SLM point at the given image coordinates."""
-        self.slm_points.append(SlmPoint(x, y, DEFAULT_POINT_INTENSITY))
+        self.slm_points.append(
+            SlmPoint(x, y, self.slm_feature_state.default_point_z, DEFAULT_POINT_INTENSITY)
+        )
         self._mark_slm_dirty()
         logging.info("Added SLM point at (%.1f, %.1f), total: %d", x, y, len(self.slm_points))
 
@@ -861,7 +925,7 @@ class AggregateControllerStreaming:
         """Move an existing SLM point to new coordinates."""
         if 0 <= index < len(self.slm_points):
             point = self.slm_points[index]
-            self.slm_points[index] = SlmPoint(x, y, point.intensity)
+            self.slm_points[index] = SlmPoint(x, y, point.z, point.intensity)
             self._mark_slm_dirty()
 
     def remove_point(self, index: int) -> None:
@@ -888,7 +952,11 @@ class AggregateControllerStreaming:
             return
         
         try:
-            self.slm_client.send_command(self.slm_points, self.slm_affine_params)
+            self.slm_client.send_command(
+                self.slm_points,
+                self.slm_affine_params,
+                feature_state=self.slm_feature_state,
+            )
             self.slm_last_send = time.time()
             self.slm_dirty = False
             logging.info("Sent %d SLM points", len(self.slm_points))
@@ -993,6 +1061,169 @@ class AggregateControllerStreaming:
                     dpg.set_value(input_id, self.slm_affine_params[param_name])
         except Exception as exc:
             logging.error("Failed to update SLM affine UI: %s", exc)
+
+    # SLM Feature Configuration Management
+
+    def list_feature_configs(self) -> List[str]:
+        return self.slm_feature_config_manager.list_configs()
+
+    def get_current_feature_config_name(self) -> str:
+        return self.slm_feature_config_manager.get_current_config_name()
+
+    def save_feature_config(self, name: str, description: str = "") -> bool:
+        try:
+            config = self.slm_feature_config_manager.create_config(name, description)
+            self._apply_feature_state_to_config(config)
+            self.slm_feature_config_manager.update_config(name, config)
+            logging.info("Saved feature configuration: %s", name)
+            return True
+        except Exception as exc:
+            logging.error("Failed to save feature configuration %s: %s", name, exc)
+            return False
+
+    def load_feature_config(self, name: str) -> bool:
+        try:
+            config = self.slm_feature_config_manager.get_config(name)
+            if config is None:
+                logging.warning("Feature configuration not found: %s", name)
+                return False
+            self.slm_feature_config_manager.set_current_config(name)
+            self._load_feature_state_from_config(config)
+            if self.ui:
+                self._update_feature_controls_ui()
+                self._update_point_list()
+            self._notify_feature_change()
+            logging.info("Loaded feature configuration: %s", name)
+            return True
+        except Exception as exc:
+            logging.error("Failed to load feature configuration %s: %s", name, exc)
+            return False
+
+    def set_default_feature_config(self, name: str) -> bool:
+        if not self.slm_feature_config_manager.set_current_config(name):
+            logging.warning("Feature configuration not found: %s", name)
+            return False
+        return self.load_feature_config(name)
+
+    def reset_feature_config_to_default(self) -> None:
+        self.slm_feature_config_manager.reset_to_default()
+        self.load_feature_config("default")
+
+    def delete_feature_config(self, name: str) -> bool:
+        if not self.slm_feature_config_manager.delete_config(name):
+            logging.warning("Cannot delete feature configuration: %s", name)
+            return False
+        logging.info("Deleted feature configuration: %s", name)
+        return True
+
+    def _apply_feature_state_to_config(self, config: SlmFeatureConfig) -> None:
+        config.apodization_enabled = self.slm_feature_state.apodization_enabled
+        config.apodization_strength = self.slm_feature_state.apodization_strength
+        config.z_focus_enabled = self.slm_feature_state.z_focus_enabled
+        config.z_focus_offset = self.slm_feature_state.z_focus_offset
+        config.z_focus_scale = self.slm_feature_state.z_focus_scale
+        config.default_point_z = self.slm_feature_state.default_point_z
+
+    def _load_feature_state_from_config(self, config: SlmFeatureConfig) -> None:
+        copied = SlmFeatureConfig.from_dict(config.to_dict())
+        previous_default = self.slm_feature_state.default_point_z if hasattr(self, "slm_feature_state") else None
+        self.slm_feature_config = copied
+        self.slm_feature_state = SlmFeatureState(
+            apodization_enabled=copied.apodization_enabled,
+            apodization_strength=copied.apodization_strength,
+            z_focus_enabled=copied.z_focus_enabled,
+            z_focus_offset=copied.z_focus_offset,
+            z_focus_scale=copied.z_focus_scale,
+            default_point_z=copied.default_point_z,
+        )
+        self._apply_default_z_to_points(previous_default, copied.default_point_z)
+
+    def _apply_default_z_to_points(self, previous_default: Optional[float], new_default: float) -> None:
+        if previous_default is None:
+            for idx, point in enumerate(self.slm_points):
+                self.slm_points[idx] = SlmPoint(point.x, point.y, new_default, point.intensity)
+            return
+
+        for idx, point in enumerate(self.slm_points):
+            if abs(point.z - previous_default) < 1e-6:
+                self.slm_points[idx] = SlmPoint(point.x, point.y, new_default, point.intensity)
+
+    def _update_feature_controls_ui(self) -> None:
+        if not self.ui:
+            return
+        try:
+            if self.ui.feature_apodization_checkbox is not None:
+                dpg.set_value(self.ui.feature_apodization_checkbox, self.slm_feature_state.apodization_enabled)
+            if self.ui.feature_apodization_strength_slider is not None:
+                dpg.set_value(self.ui.feature_apodization_strength_slider, self.slm_feature_state.apodization_strength)
+            if self.ui.feature_z_focus_checkbox is not None:
+                dpg.set_value(self.ui.feature_z_focus_checkbox, self.slm_feature_state.z_focus_enabled)
+            if self.ui.feature_z_focus_offset_slider is not None:
+                dpg.set_value(self.ui.feature_z_focus_offset_slider, self.slm_feature_state.z_focus_offset)
+            if self.ui.feature_z_focus_scale_slider is not None:
+                dpg.set_value(self.ui.feature_z_focus_scale_slider, self.slm_feature_state.z_focus_scale)
+            if self.ui.feature_default_point_z_slider is not None:
+                dpg.set_value(self.ui.feature_default_point_z_slider, self.slm_feature_state.default_point_z)
+            if self.ui.feature_config_combo is not None:
+                dpg.configure_item(
+                    self.ui.feature_config_combo,
+                    items=self.list_feature_configs(),
+                    default_value=self.get_current_feature_config_name(),
+                )
+        except Exception as exc:
+            logging.error("Failed to update feature controls UI: %s", exc)
+
+    def _notify_feature_change(self, immediate: bool = False) -> None:
+        self._mark_slm_dirty()
+        if immediate and self.slm_client.connected:
+            self.force_send_slm()
+
+    def set_apodization_enabled(self, enabled: bool) -> None:
+        value = bool(enabled)
+        self.slm_feature_state.apodization_enabled = value
+        self.slm_feature_config.apodization_enabled = value
+        self._notify_feature_change(immediate=True)
+
+    def set_apodization_strength(self, strength: float) -> None:
+        clamped = max(0.0, min(float(strength), 1.0))
+        self.slm_feature_state.apodization_strength = clamped
+        self.slm_feature_config.apodization_strength = clamped
+        self._notify_feature_change(immediate=False)
+
+    def set_z_focus_enabled(self, enabled: bool) -> None:
+        value = bool(enabled)
+        self.slm_feature_state.z_focus_enabled = value
+        self.slm_feature_config.z_focus_enabled = value
+        self._notify_feature_change(immediate=True)
+
+    def set_z_focus_offset(self, offset: float) -> None:
+        prev = self.slm_feature_state.z_focus_offset
+        self.slm_feature_state.z_focus_offset = float(offset)
+        self.slm_feature_config.z_focus_offset = float(offset)
+        # Update existing points that still match the previous offset
+        for idx, point in enumerate(self.slm_points):
+            if abs(point.z - prev) < 1e-6:
+                self.slm_points[idx] = SlmPoint(point.x, point.y, float(offset), point.intensity)
+        if self.ui:
+            self._update_point_list()
+        self._notify_feature_change(immediate=False)
+
+    def set_z_focus_scale(self, scale: float) -> None:
+        value = max(0.0, float(scale))
+        self.slm_feature_state.z_focus_scale = value
+        self.slm_feature_config.z_focus_scale = value
+        self._notify_feature_change(immediate=False)
+
+    def set_default_point_z(self, value: float) -> None:
+        prev_default = self.slm_feature_state.default_point_z
+        self.slm_feature_state.default_point_z = float(value)
+        self.slm_feature_config.default_point_z = float(value)
+        for idx, point in enumerate(self.slm_points):
+            if abs(point.z - prev_default) < 1e-6:
+                self.slm_points[idx] = SlmPoint(point.x, point.y, float(value), point.intensity)
+        if self.ui:
+            self._update_point_list()
+        self._notify_feature_change(immediate=False)
     
     # Tracking Configuration Management
     
@@ -1648,7 +1879,11 @@ class AggregateControllerStreaming:
             # Add each point as a list item
             for idx, point in enumerate(self.slm_points):
                 with dpg.group(parent=self.ui.slm_points_list_group, horizontal=True):
-                    dpg.add_text(f"{idx}: ({point.x:.1f}, {point.y:.1f})", color=TEXT_PRIMARY, tag=f"slm_point_{idx}")
+                    dpg.add_text(
+                        f"{idx}: ({point.x:.1f}, {point.y:.1f}) z={point.z:.2f} I={point.intensity:.2f}",
+                        color=TEXT_PRIMARY,
+                        tag=f"slm_point_{idx}"
+                    )
                     dpg.add_button(
                         label="X",
                         width=25,
@@ -2240,6 +2475,140 @@ def _confirm_slm_config_delete(sender: int, app_data: Any, user_data: Tuple[Aggr
         with dpg.window(label="Error", modal=True, tag="slm_config_delete_error_dialog"):
             dpg.add_text(f"Failed to delete configuration '{config_name}'.")
             dpg.add_button(label="OK", callback=lambda: dpg.delete_item("slm_config_delete_error_dialog"))
+
+
+# Feature Configuration Callbacks
+
+def _on_feature_apodization_toggled(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    value = bool(dpg.get_value(sender))
+    controller.set_apodization_enabled(value)
+
+
+def _on_feature_apodization_strength(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    strength = float(dpg.get_value(sender))
+    controller.set_apodization_strength(strength)
+
+
+def _on_feature_z_focus_toggled(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    value = bool(dpg.get_value(sender))
+    controller.set_z_focus_enabled(value)
+
+
+def _on_feature_z_focus_offset(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    offset = float(dpg.get_value(sender))
+    controller.set_z_focus_offset(offset)
+
+
+def _on_feature_z_focus_scale(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    scale = float(dpg.get_value(sender))
+    controller.set_z_focus_scale(scale)
+
+
+def _on_feature_default_point_z(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    default_z = float(dpg.get_value(sender))
+    controller.set_default_point_z(default_z)
+
+
+def _on_feature_config_save(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+
+    def open_dialog() -> None:
+        with dpg.window(label="Save Feature Configuration", modal=True, tag="feature_config_save_dialog"):
+            dpg.add_text("Save current feature configuration:")
+            dpg.add_input_text(label="Name", tag="feature_config_name_input", default_value="")
+            dpg.add_input_text(label="Description", tag="feature_config_desc_input", default_value="", multiline=True, height=60)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Save", callback=_confirm_feature_config_save, user_data=controller)
+                dpg.add_button(label="Cancel", callback=lambda: dpg.delete_item("feature_config_save_dialog"))
+
+    open_dialog()
+
+
+def _confirm_feature_config_save(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+
+    name = dpg.get_value("feature_config_name_input").strip()
+    description = dpg.get_value("feature_config_desc_input").strip()
+
+    if not name:
+        with dpg.window(label="Error", modal=True, tag="feature_config_error_dialog"):
+            dpg.add_text("Configuration name cannot be empty.")
+            dpg.add_button(label="OK", callback=lambda: dpg.delete_item("feature_config_error_dialog"))
+        return
+
+    success = controller.save_feature_config(name, description)
+    dpg.delete_item("feature_config_save_dialog")
+
+    if success and controller.ui and controller.ui.feature_config_combo:
+        configs = controller.list_feature_configs()
+        dpg.configure_item(controller.ui.feature_config_combo, items=configs, default_value=name)
+        controller.load_feature_config(name)
+    elif not success:
+        with dpg.window(label="Error", modal=True, tag="feature_config_save_error_dialog"):
+            dpg.add_text(f"Failed to save feature configuration '{name}'.")
+            dpg.add_button(label="OK", callback=lambda: dpg.delete_item("feature_config_save_error_dialog"))
+
+
+def _on_feature_config_load(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    if controller.ui and controller.ui.feature_config_combo:
+        selected = dpg.get_value(controller.ui.feature_config_combo)
+        controller.load_feature_config(selected)
+
+
+def _on_feature_config_set_default(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    if controller.ui and controller.ui.feature_config_combo:
+        selected = dpg.get_value(controller.ui.feature_config_combo)
+        controller.set_default_feature_config(selected)
+
+
+def _on_feature_config_reset(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    controller.reset_feature_config_to_default()
+    if controller.ui and controller.ui.feature_config_combo:
+        dpg.set_value(controller.ui.feature_config_combo, "default")
+
+
+def _on_feature_config_delete(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    if controller.ui and controller.ui.feature_config_combo:
+        selected = dpg.get_value(controller.ui.feature_config_combo)
+        if selected == "default":
+            with dpg.window(label="Error", modal=True, tag="feature_config_delete_error_dialog"):
+                dpg.add_text("Cannot delete the default configuration.")
+                dpg.add_button(label="OK", callback=lambda: dpg.delete_item("feature_config_delete_error_dialog"))
+            return
+
+        def confirm() -> None:
+            with dpg.window(label="Confirm Delete", modal=True, tag="feature_config_delete_confirm_dialog"):
+                dpg.add_text(f"Delete feature configuration '{selected}'?")
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label="Delete", callback=_confirm_feature_config_delete, user_data=(controller, selected))
+                    dpg.add_button(label="Cancel", callback=lambda: dpg.delete_item("feature_config_delete_confirm_dialog"))
+
+        confirm()
+
+
+def _confirm_feature_config_delete(sender: int, app_data: Any, user_data: Tuple[AggregateControllerStreaming, str]) -> None:
+    controller, name = user_data
+    success = controller.delete_feature_config(name)
+    dpg.delete_item("feature_config_delete_confirm_dialog")
+
+    if success and controller.ui and controller.ui.feature_config_combo:
+        configs = controller.list_feature_configs()
+        dpg.configure_item(controller.ui.feature_config_combo, items=configs, default_value="default")
+        controller.load_feature_config(controller.get_current_feature_config_name())
+    elif not success:
+        with dpg.window(label="Error", modal=True, tag="feature_config_delete_error_dialog"):
+            dpg.add_text(f"Failed to delete feature configuration '{name}'.")
+            dpg.add_button(label="OK", callback=lambda: dpg.delete_item("feature_config_delete_error_dialog"))
 
 
 # Tracking Configuration Callbacks
@@ -3465,6 +3834,106 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         
         dpg.add_separator()
         dpg.add_spacing(count=2)
+        dpg.add_text("HOLOGRAM FEATURES", color=SLM_COLOR)
+        dpg.add_text("Adjust optional hologram processing stages", color=TEXT_SECONDARY)
+        feature_apodization_checkbox = dpg.add_checkbox(
+            label="Enable Apodization",
+            default_value=controller.slm_feature_state.apodization_enabled,
+            callback=_on_feature_apodization_toggled,
+            user_data=controller,
+        )
+        feature_apodization_strength_slider = dpg.add_slider_float(
+            label="Apodization Strength",
+            default_value=controller.slm_feature_state.apodization_strength,
+            min_value=0.0,
+            max_value=1.0,
+            callback=_on_feature_apodization_strength,
+            user_data=controller,
+        )
+        feature_z_focus_checkbox = dpg.add_checkbox(
+            label="Enable Z Focus",
+            default_value=controller.slm_feature_state.z_focus_enabled,
+            callback=_on_feature_z_focus_toggled,
+            user_data=controller,
+        )
+        feature_z_focus_offset_slider = dpg.add_slider_float(
+            label="Z Focus Offset",
+            default_value=controller.slm_feature_state.z_focus_offset,
+            min_value=-20.0,
+            max_value=20.0,
+            callback=_on_feature_z_focus_offset,
+            user_data=controller,
+        )
+        feature_z_focus_scale_slider = dpg.add_slider_float(
+            label="Z Focus Scale",
+            default_value=controller.slm_feature_state.z_focus_scale,
+            min_value=0.0,
+            max_value=10.0,
+            callback=_on_feature_z_focus_scale,
+            user_data=controller,
+        )
+        feature_default_point_z_slider = dpg.add_slider_float(
+            label="Default Point Z",
+            default_value=controller.slm_feature_state.default_point_z,
+            min_value=-20.0,
+            max_value=20.0,
+            callback=_on_feature_default_point_z,
+            user_data=controller,
+        )
+
+        dpg.add_spacing(count=1)
+        feature_configs = controller.list_feature_configs()
+        feature_current = controller.get_current_feature_config_name()
+        feature_config_combo = dpg.add_combo(
+            label="Feature Configuration",
+            items=feature_configs,
+            default_value=feature_current,
+            callback=_on_feature_config_load,
+            user_data=controller,
+            width=200,
+        )
+
+        with dpg.group(horizontal=True):
+            feature_config_save_button = dpg.add_button(
+                label="Save",
+                callback=_on_feature_config_save,
+                user_data=controller,
+                width=90,
+                tag="feature_config_save_btn",
+            )
+            feature_config_load_button = dpg.add_button(
+                label="Load",
+                callback=_on_feature_config_load,
+                user_data=controller,
+                width=90,
+                tag="feature_config_load_btn",
+            )
+            feature_config_set_default_button = dpg.add_button(
+                label="Set Default",
+                callback=_on_feature_config_set_default,
+                user_data=controller,
+                width=90,
+                tag="feature_config_default_btn",
+            )
+
+        with dpg.group(horizontal=True):
+            feature_config_reset_button = dpg.add_button(
+                label="Reset",
+                callback=_on_feature_config_reset,
+                user_data=controller,
+                width=90,
+                tag="feature_config_reset_btn",
+            )
+            feature_config_delete_button = dpg.add_button(
+                label="Delete",
+                callback=_on_feature_config_delete,
+                user_data=controller,
+                width=90,
+                tag="feature_config_delete_btn",
+            )
+
+        dpg.add_separator()
+        dpg.add_spacing(count=2)
         dpg.add_text("POINT LIST", color=SLM_COLOR)
         dpg.add_text("Click on image to add, right-click to remove", color=TEXT_SECONDARY)
         dpg.add_spacing(count=1)
@@ -3538,6 +4007,18 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         slm_circle_color_picker=slm_circle_color_picker,
         slm_circle_size_slider=slm_circle_size_slider,
         slm_circle_thickness_slider=slm_circle_thickness_slider,
+    feature_apodization_checkbox=feature_apodization_checkbox,
+    feature_apodization_strength_slider=feature_apodization_strength_slider,
+    feature_z_focus_checkbox=feature_z_focus_checkbox,
+    feature_z_focus_offset_slider=feature_z_focus_offset_slider,
+    feature_z_focus_scale_slider=feature_z_focus_scale_slider,
+    feature_default_point_z_slider=feature_default_point_z_slider,
+    feature_config_combo=feature_config_combo,
+    feature_config_save_button=feature_config_save_button,
+    feature_config_load_button=feature_config_load_button,
+    feature_config_set_default_button=feature_config_set_default_button,
+    feature_config_reset_button=feature_config_reset_button,
+    feature_config_delete_button=feature_config_delete_button,
         image_connection_status_label=image_status_label,
         due_connection_status_label=due_connection_status_label,
         slm_connection_status_label=slm_connection_status_label,
@@ -3780,10 +4261,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     services_config = _load_services_config(args.services_config)
     global_config = services_config.get("global", {})
     slm_config_dir = global_config.get("slm_config_dir", "slm_config")
+    feature_config_dir = global_config.get("slm_feature_config_dir", "slm_feature_config")
     
     # Resolve relative path to absolute
     config_path = Path(__file__).parent / slm_config_dir
+    feature_config_path = Path(__file__).parent / feature_config_dir
     slm_config_manager = SlmConfigManager(config_path)
+    slm_feature_config_manager = SlmFeatureConfigManager(feature_config_path)
     
     # Load tracking configuration manager
     tracking_config_dir = global_config.get("tracking_config_dir", "../Camera/tracking_config")
@@ -3807,6 +4291,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         due_endpoint=due_endpoint,
         slm_endpoint=slm_endpoint,
         slm_config_manager=slm_config_manager,
+        slm_feature_config_manager=slm_feature_config_manager,
         tracking_config_manager=tracking_config_manager,
     )
     

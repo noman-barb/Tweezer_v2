@@ -1,4 +1,8 @@
 {
-  "current_config": "default",
-  "available_configs": ["default", "example"]
+  "current_config": "tweezer_area",
+  "available_configs": [
+    "slm1",
+    "default",
+    "tweezer_area"
+  ]
 }
