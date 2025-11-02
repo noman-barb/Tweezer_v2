@@ -178,6 +178,16 @@ def _normalize_to_uint8(image: np.ndarray) -> np.ndarray:
         return np.ascontiguousarray(image)
     if np.issubdtype(image.dtype, np.unsignedinteger):
         bit_depth = image.dtype.itemsize * 8
+        
+        # Auto-detect 12-bit images stored in uint16
+        if bit_depth == 16:
+            max_val = np.max(image)
+            if max_val <= 4095:
+                # Treat as 12-bit: scale up to use full uint8 range
+                # 12-bit (0-4095) -> 8-bit (0-255): divide by 16
+                shifted = np.right_shift(image, 4)
+                return np.ascontiguousarray(shifted.astype(np.uint8, copy=False))
+        
         if bit_depth >= 8:
             shift = bit_depth - 8
             shifted = np.right_shift(image, shift)

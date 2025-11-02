@@ -1908,6 +1908,10 @@ class AggregateControllerStreaming:
             if config.experiment and self.ui:
                 self._apply_experiment_params(config.experiment)
             
+            # Update UI config combo box to show the loaded config
+            if self.ui and self.ui.ui_config_combo and dpg.does_item_exist(self.ui.ui_config_combo):
+                dpg.set_value(self.ui.ui_config_combo, name)
+            
             logging.info(f"Loaded UI configuration: {name}")
             return True
         except Exception as exc:
@@ -2943,14 +2947,16 @@ class AggregateControllerStreaming:
             param_specs = script.get_param_specs()
         except AttributeError:
             # Script doesn't support auto-config - show message
-            with dpg.parent(self.ui.experiment_params_container):
-                dpg.add_text("This script uses manual parameter configuration", color=(180, 180, 180, 255))
+            dpg.add_text("This script uses manual parameter configuration", 
+                        color=(180, 180, 180, 255), 
+                        parent=self.ui.experiment_params_container)
             return
         
         if not param_specs:
             # No auto-config parameters - show message
-            with dpg.parent(self.ui.experiment_params_container):
-                dpg.add_text("This script has no configurable parameters", color=(180, 180, 180, 255))
+            dpg.add_text("This script has no configurable parameters", 
+                        color=(180, 180, 180, 255), 
+                        parent=self.ui.experiment_params_container)
             return
         
         # Group parameters by category
@@ -2962,78 +2968,82 @@ class AggregateControllerStreaming:
             categories[category].append((name, spec))
         
         # Create UI controls grouped by category
-        with dpg.parent(self.ui.experiment_params_container):
-            for category, params in sorted(categories.items()):
-                # Category header
-                if len(categories) > 1:
-                    dpg.add_text(category, color=(150, 150, 255, 255))
-                    dpg.add_spacing(count=1)
-                
-                for param_name, spec in sorted(params, key=lambda x: x[1].label):
-                    current_value = script.get_param_value(param_name)
-                    
-                    # Generate appropriate widget based on type
-                    if spec.param_type == float:
-                        widget_id = dpg.add_input_float(
-                            label=f"{spec.label} ({spec.unit})" if spec.unit else spec.label,
-                            default_value=current_value if current_value is not None else spec.default,
-                            width=150,
-                            min_value=spec.min_value if spec.min_value is not None else 0.0,
-                            max_value=spec.max_value if spec.max_value is not None else 100.0,
-                            min_clamped=spec.min_value is not None,
-                            max_clamped=spec.max_value is not None,
-                            step=spec.step if spec.step else 0.1,
-                            format=spec.format_str
-                        )
-                    
-                    elif spec.param_type == int:
-                        widget_id = dpg.add_input_int(
-                            label=f"{spec.label} ({spec.unit})" if spec.unit else spec.label,
-                            default_value=current_value if current_value is not None else spec.default,
-                            width=150,
-                            min_value=int(spec.min_value) if spec.min_value is not None else 0,
-                            max_value=int(spec.max_value) if spec.max_value is not None else 1000,
-                            min_clamped=spec.min_value is not None,
-                            max_clamped=spec.max_value is not None,
-                            step=int(spec.step) if spec.step else 1
-                        )
-                    
-                    elif spec.param_type == bool:
-                        widget_id = dpg.add_checkbox(
-                            label=spec.label,
-                            default_value=current_value if current_value is not None else spec.default
-                        )
-                    
-                    elif spec.param_type == str:
-                        widget_id = dpg.add_input_text(
-                            label=spec.label,
-                            default_value=current_value if current_value is not None else spec.default,
-                            width=150
-                        )
-                    
-                    else:
-                        # Unsupported type - skip
-                        logging.warning(f"Unsupported parameter type for {param_name}: {spec.param_type}")
-                        continue
-                    
-                    # Store widget ID for later access
-                    self.ui.experiment_param_widgets[param_name] = widget_id
-                    
-                    # Add tooltip if description available
-                    if spec.description and dpg.does_item_exist(widget_id):
-                        with dpg.tooltip(widget_id):
-                            dpg.add_text(spec.description, wrap=200)
-                
-                dpg.add_spacing(count=1)
+        for category, params in sorted(categories.items()):
+            # Category header
+            if len(categories) > 1:
+                dpg.add_text(category, color=(150, 150, 255, 255), parent=self.ui.experiment_params_container)
+                dpg.add_spacing(count=1, parent=self.ui.experiment_params_container)
             
-            # Add apply button
-            dpg.add_spacing(count=1)
-            dpg.add_button(
-                label="Apply Parameters",
-                callback=_on_experiment_params_apply,
-                user_data=self,
-                width=-1
-            )
+            for param_name, spec in sorted(params, key=lambda x: x[1].label):
+                current_value = script.get_param_value(param_name)
+                
+                # Generate appropriate widget based on type
+                if spec.param_type == float:
+                    widget_id = dpg.add_input_float(
+                        label=f"{spec.label} ({spec.unit})" if spec.unit else spec.label,
+                        default_value=current_value if current_value is not None else spec.default,
+                        width=150,
+                        min_value=spec.min_value if spec.min_value is not None else 0.0,
+                        max_value=spec.max_value if spec.max_value is not None else 100.0,
+                        min_clamped=spec.min_value is not None,
+                        max_clamped=spec.max_value is not None,
+                        step=spec.step if spec.step else 0.1,
+                        format=spec.format_str,
+                        parent=self.ui.experiment_params_container
+                    )
+                
+                elif spec.param_type == int:
+                    widget_id = dpg.add_input_int(
+                        label=f"{spec.label} ({spec.unit})" if spec.unit else spec.label,
+                        default_value=current_value if current_value is not None else spec.default,
+                        width=150,
+                        min_value=int(spec.min_value) if spec.min_value is not None else 0,
+                        max_value=int(spec.max_value) if spec.max_value is not None else 1000,
+                        min_clamped=spec.min_value is not None,
+                        max_clamped=spec.max_value is not None,
+                        step=int(spec.step) if spec.step else 1,
+                        parent=self.ui.experiment_params_container
+                    )
+                
+                elif spec.param_type == bool:
+                    widget_id = dpg.add_checkbox(
+                        label=spec.label,
+                        default_value=current_value if current_value is not None else spec.default,
+                        parent=self.ui.experiment_params_container
+                    )
+                
+                elif spec.param_type == str:
+                    widget_id = dpg.add_input_text(
+                        label=spec.label,
+                        default_value=current_value if current_value is not None else spec.default,
+                        width=150,
+                        parent=self.ui.experiment_params_container
+                    )
+                
+                else:
+                    # Unsupported type - skip
+                    logging.warning(f"Unsupported parameter type for {param_name}: {spec.param_type}")
+                    continue
+                
+                # Store widget ID for later access
+                self.ui.experiment_param_widgets[param_name] = widget_id
+                
+                # Add tooltip if description available
+                if spec.description and dpg.does_item_exist(widget_id):
+                    with dpg.tooltip(widget_id):
+                        dpg.add_text(spec.description, wrap=200)
+            
+            dpg.add_spacing(count=1, parent=self.ui.experiment_params_container)
+        
+        # Add apply button
+        dpg.add_spacing(count=1, parent=self.ui.experiment_params_container)
+        dpg.add_button(
+            label="Apply Parameters",
+            callback=_on_experiment_params_apply,
+            user_data=self,
+            width=-1,
+            parent=self.ui.experiment_params_container
+        )
 
     def shutdown(self) -> None:
         """Shutdown all connections."""
@@ -4583,7 +4593,7 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
                 dpg.add_spacing(count=1)
                 with dpg.group(horizontal=True):
                     dpg.add_text("Step:", color=TEXT_SECONDARY, indent=10)
-                    increment_input = dpg.add_input_float(label=f"##inc_{name}", default_value=0.01, width=80)
+                    increment_input = dpg.add_input_float(label=f"##inc_{name}", default_value=0.5, width=80)
                     dpg.add_button(label=" - ", callback=_on_dac_adjust,
                                   user_data=(controller, name, -1, increment_input), width=40)
                     dpg.add_button(label=" + ", callback=_on_dac_adjust,
@@ -5500,6 +5510,37 @@ def run_ui(controller: AggregateControllerStreaming, ui: AggregateUI) -> None:
     """Run the UI main loop."""
     controller.set_ui(ui)
     # Note: viewport is already shown in create_ui
+    
+    # Automatically load the active configuration
+    try:
+        active_config = controller.dashboard_config_manager.get_active_config()
+        if active_config:
+            config_name = controller.dashboard_config_manager.active_config_name
+            logging.info(f"Auto-loading active configuration: {config_name}")
+            # Apply the configuration after a short delay to ensure UI is fully initialized
+            def auto_load():
+                import time
+                time.sleep(0.1)  # Small delay to ensure viewport is ready
+                
+                # Update combo box items to reflect current configs
+                if ui.ui_config_combo and dpg.does_item_exist(ui.ui_config_combo):
+                    configs = controller.list_ui_configs()
+                    dpg.configure_item(ui.ui_config_combo, items=configs)
+                
+                # Load the active configuration
+                success = controller.load_ui_config(config_name)
+                if success:
+                    logging.info(f"Successfully auto-loaded configuration: {config_name}")
+                    # Update combo box value to show loaded config
+                    if ui.ui_config_combo and dpg.does_item_exist(ui.ui_config_combo):
+                        dpg.set_value(ui.ui_config_combo, config_name)
+                else:
+                    logging.warning(f"Failed to auto-load configuration: {config_name}")
+            
+            import threading
+            threading.Thread(target=auto_load, daemon=True).start()
+    except Exception as exc:
+        logging.warning(f"Failed to auto-load active configuration: {exc}")
     
     # Initialize experiment parameters UI with first script if available
     if ui.experiment_script_combo and dpg.does_item_exist(ui.experiment_script_combo):
