@@ -91,3 +91,18 @@ services:
       width: 1920
       height: 1152
       iterations: 50
+  ambient_telemetry:
+    enabled: true
+    name: Ambient Telemetry Server
+    script_path: GUI/external_access/start_ambient_telemetry.sh
+    python_script: GUI/external_access/ambient_telemetry_server.py
+    cpu_list: '55'
+    restart_on_exit: true
+    restart_delay: 5
+    log_subdir: ambient_telemetry
+    args:
+      logs_dir: ../logs/AutoLogs/Arduino_duo_server
+      http_host: 0.0.0.0
+      http_port: 9001
+      page_size: 240
+      log_level: INFO

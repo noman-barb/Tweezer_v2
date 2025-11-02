@@ -7,3 +7,14 @@ logs/
 
 # Ignore HDF5 files
 *.h5
+
+# ignore csv files
+*.csv
+
+# ignore .log files
+*.log
+
+# Ignore temporary files
+*.tmp
+*.temp
+
