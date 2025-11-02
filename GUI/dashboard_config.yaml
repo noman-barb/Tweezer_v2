@@ -1,0 +1,512 @@
+active_config: cfg2
+configs:
+  default:
+    name: default
+    description: Default dashboard configuration
+    created_at: '2025-11-02T00:00:00'
+    viewport:
+      width: 2560
+      height: 1400
+      title: Tweezer Control & Monitoring
+    windows:
+      connections:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+      monitoring:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+      experiment_scripts:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+      image_viewer:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+      image_display_controls:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+      image_saving:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+      environment_dac:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+      hardware_monitoring:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+      image_metrics:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+      slm_metrics:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+      tracking_parameters:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+      slm_control:
+        x: null
+        y: null
+        width: null
+        height: null
+        collapsed: false
+    image_display:
+      display_mode: overlay
+      show_tile_grid: false
+      zoom: 1.0
+      use_mass_colormap: true
+      mass_cutoff: 600.0
+      below_cutoff_color:
+      - 255
+      - 255
+      - 255
+      above_cutoff_color:
+      - 255
+      - 0
+      - 0
+      circle_scale: 1.0
+    slm_visualization:
+      circle_color:
+      - 255
+      - 0
+      - 0
+      - 255
+      circle_radius: 15.0
+      circle_thickness: 2
+    hardware_monitoring:
+      history_limit: 1000
+      show_temperature: true
+      show_humidity: true
+      show_analog_channels: true
+    image_metrics:
+      history_limit: 1000
+      show_latency: true
+      show_processing: true
+      show_render: true
+      show_features: true
+      show_save: true
+      show_compression: true
+    storage:
+      auto_save_raw: false
+      auto_save_overlay: false
+      save_hdf5: false
+      target_fps: 30.0
+    monitoring:
+      interval_seconds: 1.0
+      auto_start: false
+    experiment:
+      move_time_min: 1.0
+      move_time_max: 3.0
+      distance_min: 50.0
+      distance_max: 200.0
+      delay: 0.5
+      separation: 100.0
+      edge_margin: 50.0
+      slm_refresh: 0.1
+    theme:
+      hardware_color:
+      - 220
+      - 80
+      - 80
+      - 255
+      image_color:
+      - 80
+      - 200
+      - 90
+      - 255
+      slm_color:
+      - 230
+      - 180
+      - 60
+      - 255
+      status_connected:
+      - 80
+      - 220
+      - 90
+      - 255
+      status_disconnected:
+      - 220
+      - 60
+      - 60
+      - 255
+      text_primary:
+      - 230
+      - 230
+      - 230
+      - 255
+      text_secondary:
+      - 180
+      - 180
+      - 180
+      - 255
+  cfg1:
+    name: cfg1
+    description: ''
+    created_at: '2025-11-02T11:52:03.837924+00:00'
+    viewport:
+      width: 2488
+      height: 1376
+      title: Tweezer Control & Monitoring
+    windows:
+      connections:
+        x: 10
+        y: 35
+        width: 323
+        height: 247
+        collapsed: false
+      monitoring:
+        x: 10
+        y: 440
+        width: 323
+        height: 137
+        collapsed: false
+      experiment_scripts:
+        x: 10
+        y: 587
+        width: 323
+        height: 206
+        collapsed: false
+      image_viewer:
+        x: 355
+        y: 8
+        width: 1484
+        height: 1147
+        collapsed: false
+      image_display_controls:
+        x: 1841
+        y: 34
+        width: 309
+        height: 481
+        collapsed: false
+      image_saving:
+        x: 2153
+        y: 35
+        width: 325
+        height: 481
+        collapsed: false
+      environment_dac:
+        x: 10
+        y: 804
+        width: 323
+        height: 275
+        collapsed: false
+      hardware_monitoring:
+        x: 1844
+        y: 520
+        width: 311
+        height: 840
+        collapsed: false
+      image_metrics:
+        x: 2154
+        y: 526
+        width: 324
+        height: 619
+        collapsed: false
+      slm_metrics:
+        x: 2109
+        y: 1155
+        width: 369
+        height: 211
+        collapsed: false
+      tracking_parameters:
+        x: 10
+        y: 1089
+        width: 323
+        height: 277
+        collapsed: false
+      slm_control:
+        x: 343
+        y: 1158
+        width: 1368
+        height: 183
+        collapsed: false
+    image_display:
+      display_mode: overlay
+      show_tile_grid: true
+      zoom: 0.9399999976158142
+      use_mass_colormap: false
+      mass_cutoff: 0.0
+      below_cutoff_color:
+      - 255
+      - 255
+      - 255
+      above_cutoff_color:
+      - 255
+      - 0
+      - 0
+      circle_scale: 1.0
+    slm_visualization:
+      circle_color:
+      - 0
+      - 255
+      - 0
+      - 255
+      circle_radius: 15.0
+      circle_thickness: 2.0
+    hardware_monitoring:
+      history_limit: 1000
+      show_temperature: true
+      show_humidity: true
+      show_analog_channels: true
+    image_metrics:
+      history_limit: 1000
+      show_latency: true
+      show_processing: true
+      show_render: true
+      show_features: true
+      show_save: true
+      show_compression: true
+    storage:
+      auto_save_raw: false
+      auto_save_overlay: false
+      save_hdf5: false
+      target_fps: 0.0
+    monitoring:
+      interval_seconds: 5.0
+      auto_start: false
+    experiment:
+      move_time_min: 0.5
+      move_time_max: 4.0
+      distance_min: 20.0
+      distance_max: 32.0
+      delay: 4.0
+      separation: 64.0
+      edge_margin: 64.0
+      slm_refresh: 30.0
+    theme:
+      hardware_color:
+      - 220
+      - 80
+      - 80
+      - 255
+      image_color:
+      - 80
+      - 200
+      - 90
+      - 255
+      slm_color:
+      - 230
+      - 180
+      - 60
+      - 255
+      status_connected:
+      - 80
+      - 220
+      - 90
+      - 255
+      status_disconnected:
+      - 220
+      - 60
+      - 60
+      - 255
+      text_primary:
+      - 230
+      - 230
+      - 230
+      - 255
+      text_secondary:
+      - 180
+      - 180
+      - 180
+      - 255
+  cfg2:
+    name: cfg2
+    description: ''
+    created_at: '2025-11-02T11:57:21.669540+00:00'
+    viewport:
+      width: 2488
+      height: 1376
+      title: Tweezer Control & Monitoring
+    windows:
+      connections:
+        x: 10
+        y: 21
+        width: 322
+        height: 378
+        collapsed: false
+      monitoring:
+        x: 1467
+        y: 48
+        width: 323
+        height: 137
+        collapsed: false
+      experiment_scripts:
+        x: 12
+        y: 407
+        width: 323
+        height: 549
+        collapsed: false
+      image_viewer:
+        x: 355
+        y: 8
+        width: 1484
+        height: 1147
+        collapsed: false
+      image_display_controls:
+        x: 2154
+        y: 1
+        width: 325
+        height: 315
+        collapsed: false
+      image_saving:
+        x: 2154
+        y: 1
+        width: 325
+        height: 417
+        collapsed: false
+      environment_dac:
+        x: 1471
+        y: 406
+        width: 333
+        height: 578
+        collapsed: false
+      hardware_monitoring:
+        x: 1840
+        y: 5
+        width: 311
+        height: 1362
+        collapsed: false
+      image_metrics:
+        x: 2154
+        y: 421
+        width: 324
+        height: 951
+        collapsed: false
+      slm_metrics:
+        x: 343
+        y: 1158
+        width: 1492
+        height: 216
+        collapsed: false
+      tracking_parameters:
+        x: -1
+        y: 956
+        width: 349
+        height: 405
+        collapsed: false
+      slm_control:
+        x: 343
+        y: 1158
+        width: 1492
+        height: 216
+        collapsed: false
+    image_display:
+      display_mode: overlay
+      show_tile_grid: true
+      zoom: 0.9399999976158142
+      use_mass_colormap: false
+      mass_cutoff: 0.0
+      below_cutoff_color:
+      - 255
+      - 255
+      - 255
+      above_cutoff_color:
+      - 255
+      - 0
+      - 0
+      circle_scale: 1.0
+    slm_visualization:
+      circle_color:
+      - 0
+      - 255
+      - 0
+      - 255
+      circle_radius: 15.0
+      circle_thickness: 2.0
+    hardware_monitoring:
+      history_limit: 1000
+      show_temperature: true
+      show_humidity: true
+      show_analog_channels: true
+    image_metrics:
+      history_limit: 1000
+      show_latency: true
+      show_processing: true
+      show_render: true
+      show_features: true
+      show_save: true
+      show_compression: true
+    storage:
+      auto_save_raw: false
+      auto_save_overlay: false
+      save_hdf5: false
+      target_fps: 0.0
+    monitoring:
+      interval_seconds: 5.0
+      auto_start: false
+    experiment:
+      move_time_min: 0.5
+      move_time_max: 4.0
+      distance_min: 20.0
+      distance_max: 32.0
+      delay: 4.0
+      separation: 64.0
+      edge_margin: 64.0
+      slm_refresh: 30.0
+    theme:
+      hardware_color:
+      - 220
+      - 80
+      - 80
+      - 255
+      image_color:
+      - 80
+      - 200
+      - 90
+      - 255
+      slm_color:
+      - 230
+      - 180
+      - 60
+      - 255
+      status_connected:
+      - 80
+      - 220
+      - 90
+      - 255
+      status_disconnected:
+      - 220
+      - 60
+      - 60
+      - 255
+      text_primary:
+      - 230
+      - 230
+      - 230
+      - 255
+      text_secondary:
+      - 180
+      - 180
+      - 180
+      - 255

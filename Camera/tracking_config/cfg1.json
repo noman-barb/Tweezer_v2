@@ -1,0 +1,21 @@
+{
+  "name": "cfg1",
+  "description": "",
+  "diameter": 17,
+  "separation": 14,
+  "percentile": 64.0,
+  "minmass": 500.0,
+  "maxmass": 0.0,
+  "pixel_threshold": 0.0,
+  "preprocess": true,
+  "lshort": 1,
+  "llong": 17,
+  "min_ecc": -1.0,
+  "max_ecc": -1.0,
+  "refine": 1,
+  "tile_width": 256,
+  "tile_height": 256,
+  "tile_overlap": 48,
+  "max_workers": 32,
+  "worker_backend": "auto"
+}

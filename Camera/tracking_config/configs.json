@@ -1,7 +1,8 @@
 {
-  "current_config": "default",
+  "current_config": "cfg1",
   "available_configs": [
     "default",
-    "cf1"
+    "cf1",
+    "cfg1"
   ]
 }

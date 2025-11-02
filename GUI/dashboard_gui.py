@@ -91,6 +91,222 @@ from base_script import ExperimentScript, ExperimentContext  # type: ignore  # n
 from script_manager import ScriptManager  # type: ignore  # noqa: E402
 
 
+# Configuration Management
+@dataclass
+class DashboardConfig:
+    """Dashboard UI configuration."""
+    name: str
+    description: str
+    created_at: str
+    viewport: Dict[str, Any]
+    windows: Dict[str, Dict[str, Any]]
+    docking_layout: Optional[str]  # DearPyGui ini file content for complete docking state
+    image_display: Dict[str, Any]
+    slm_visualization: Dict[str, Any]
+    hardware_monitoring: Dict[str, Any]
+    image_metrics: Dict[str, Any]
+    storage: Dict[str, Any]
+    monitoring: Dict[str, Any]
+    experiment: Dict[str, Any]
+    theme: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for YAML serialization."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "created_at": self.created_at,
+            "viewport": self.viewport,
+            "windows": self.windows,
+            "docking_layout": self.docking_layout,
+            "image_display": self.image_display,
+            "slm_visualization": self.slm_visualization,
+            "hardware_monitoring": self.hardware_monitoring,
+            "image_metrics": self.image_metrics,
+            "storage": self.storage,
+            "monitoring": self.monitoring,
+            "experiment": self.experiment,
+            "theme": self.theme,
+        }
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "DashboardConfig":
+        """Create from dictionary."""
+        return DashboardConfig(
+            name=data.get("name", "unnamed"),
+            description=data.get("description", ""),
+            created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            viewport=data.get("viewport", {}),
+            windows=data.get("windows", {}),
+            docking_layout=data.get("docking_layout", None),
+            image_display=data.get("image_display", {}),
+            slm_visualization=data.get("slm_visualization", {}),
+            hardware_monitoring=data.get("hardware_monitoring", {}),
+            image_metrics=data.get("image_metrics", {}),
+            storage=data.get("storage", {}),
+            monitoring=data.get("monitoring", {}),
+            experiment=data.get("experiment", {}),
+            theme=data.get("theme", {}),
+        )
+
+
+class DashboardConfigManager:
+    """Manages dashboard UI configurations."""
+    
+    def __init__(self, config_path: Path) -> None:
+        self.config_path = config_path
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.config_path.exists():
+            self._create_default_config()
+        self._load_configs()
+    
+    def _create_default_config(self) -> None:
+        """Create default configuration file."""
+        default_config = {
+            "active_config": "default",
+            "configs": {
+                "default": {
+                    "name": "default",
+                    "description": "Default dashboard configuration",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "viewport": {"width": 2560, "height": 1400, "title": "Tweezer Control & Monitoring"},
+                    "windows": {},
+                    "image_display": {
+                        "display_mode": "overlay",
+                        "show_tile_grid": False,
+                        "zoom": 1.0,
+                        "use_mass_colormap": True,
+                        "mass_cutoff": 600.0,
+                        "below_cutoff_color": [255, 255, 255],
+                        "above_cutoff_color": [255, 0, 0],
+                        "circle_scale": 1.0,
+                    },
+                    "slm_visualization": {
+                        "circle_color": [255, 0, 0, 255],
+                        "circle_radius": 15.0,
+                        "circle_thickness": 2,
+                    },
+                    "hardware_monitoring": {
+                        "history_limit": 1000,
+                        "show_temperature": True,
+                        "show_humidity": True,
+                        "show_analog_channels": True,
+                    },
+                    "image_metrics": {
+                        "history_limit": 1000,
+                        "show_latency": True,
+                        "show_processing": True,
+                        "show_render": True,
+                        "show_features": True,
+                        "show_save": True,
+                        "show_compression": True,
+                    },
+                    "storage": {
+                        "auto_save_raw": False,
+                        "auto_save_overlay": False,
+                        "save_hdf5": False,
+                        "target_fps": 30.0,
+                    },
+                    "monitoring": {
+                        "interval_seconds": 1.0,
+                        "auto_start": False,
+                    },
+                    "experiment": {
+                        "move_time_min": 1.0,
+                        "move_time_max": 3.0,
+                        "distance_min": 50.0,
+                        "distance_max": 200.0,
+                        "delay": 0.5,
+                        "separation": 100.0,
+                        "edge_margin": 50.0,
+                        "slm_refresh": 0.1,
+                    },
+                    "theme": {
+                        "hardware_color": [220, 80, 80, 255],
+                        "image_color": [80, 200, 90, 255],
+                        "slm_color": [230, 180, 60, 255],
+                        "status_connected": [80, 220, 90, 255],
+                        "status_disconnected": [220, 60, 60, 255],
+                        "text_primary": [230, 230, 230, 255],
+                        "text_secondary": [180, 180, 180, 255],
+                    },
+                }
+            }
+        }
+        with open(self.config_path, "w") as f:
+            yaml.safe_dump(default_config, f, default_flow_style=False, sort_keys=False)
+    
+    def _load_configs(self) -> None:
+        """Load all configurations from file."""
+        try:
+            with open(self.config_path, "r") as f:
+                data = yaml.safe_load(f)
+                self.active_config_name = data.get("active_config", "default")
+                self.configs = {
+                    name: DashboardConfig.from_dict(cfg)
+                    for name, cfg in data.get("configs", {}).items()
+                }
+        except Exception as exc:
+            logging.error(f"Failed to load dashboard configs: {exc}")
+            self.active_config_name = "default"
+            self.configs = {}
+    
+    def _save_configs(self) -> None:
+        """Save all configurations to file."""
+        try:
+            data = {
+                "active_config": self.active_config_name,
+                "configs": {name: cfg.to_dict() for name, cfg in self.configs.items()}
+            }
+            with open(self.config_path, "w") as f:
+                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+        except Exception as exc:
+            logging.error(f"Failed to save dashboard configs: {exc}")
+    
+    def get_active_config(self) -> Optional[DashboardConfig]:
+        """Get the currently active configuration."""
+        return self.configs.get(self.active_config_name)
+    
+    def save_config(self, name: str, config: DashboardConfig) -> bool:
+        """Save a configuration."""
+        try:
+            self.configs[name] = config
+            self._save_configs()
+            return True
+        except Exception as exc:
+            logging.error(f"Failed to save config '{name}': {exc}")
+            return False
+    
+    def load_config(self, name: str) -> Optional[DashboardConfig]:
+        """Load a configuration by name."""
+        return self.configs.get(name)
+    
+    def set_active_config(self, name: str) -> bool:
+        """Set the active configuration."""
+        if name in self.configs:
+            self.active_config_name = name
+            self._save_configs()
+            return True
+        return False
+    
+    def delete_config(self, name: str) -> bool:
+        """Delete a configuration (cannot delete 'default')."""
+        if name == "default":
+            logging.warning("Cannot delete default configuration")
+            return False
+        if name in self.configs:
+            del self.configs[name]
+            if self.active_config_name == name:
+                self.active_config_name = "default"
+            self._save_configs()
+            return True
+        return False
+    
+    def list_configs(self) -> List[str]:
+        """List all configuration names."""
+        return sorted(self.configs.keys())
+
+
 @dataclass
 class DacChannelSpec:
     name: str
@@ -305,6 +521,26 @@ class AggregateUI:
     experiment_separation: Optional[int] = None
     experiment_edge_margin: Optional[int] = None
     experiment_slm_refresh: Optional[int] = None
+    # Dashboard UI configuration management
+    ui_config_combo: Optional[int] = None
+    ui_config_save_button: Optional[int] = None
+    ui_config_load_button: Optional[int] = None
+    ui_config_set_default_button: Optional[int] = None
+    ui_config_delete_button: Optional[int] = None
+    # Window tags for layout management
+    connection_window: Optional[int] = None
+    ui_config_window: Optional[int] = None
+    monitoring_window: Optional[int] = None
+    experiment_script_window: Optional[int] = None
+    viewer_window: Optional[int] = None
+    image_display_window: Optional[int] = None
+    image_saving_window: Optional[int] = None
+    env_window: Optional[int] = None
+    hardware_window: Optional[int] = None
+    image_metrics_window: Optional[int] = None
+    slm_metrics_window: Optional[int] = None
+    tracking_window: Optional[int] = None
+    slm_window: Optional[int] = None
 
 
 def _snake_to_label(name: str) -> str:
@@ -716,35 +952,57 @@ class SLMClient:
             logging.exception("Failed to queue SLM command: %s", exc)
 
 
-AFFINE_FIELDS = [
+def _load_dashboard_defaults() -> Dict[str, Any]:
+    """Load dashboard defaults from services config."""
+    try:
+        services_cfg = _load_services_config(DEFAULT_SERVICES_CONFIG)
+        dashboard_cfg = services_cfg.get("dashboard", {})
+        return dashboard_cfg
+    except Exception as exc:
+        logging.warning(f"Could not load dashboard config, using hardcoded defaults: {exc}")
+        return {}
+
+
+# Load dashboard configuration
+_DASHBOARD_CONFIG = _load_dashboard_defaults()
+
+# Affine transformation fields
+AFFINE_FIELDS = _DASHBOARD_CONFIG.get("affine_fields", [
     "translate_x", "translate_y", "translate_z",
     "rotate_x_deg", "rotate_y_deg", "rotate_z_deg",
     "scale_x", "scale_y", "scale_z",
     "shear_xy", "shear_yz", "shear_xz",
-]
+])
 
-DEFAULT_SLM_WIDTH = 1920
-DEFAULT_SLM_HEIGHT = 1152
-DEFAULT_POINT_INTENSITY = 0.9
-POINT_SELECTION_RADIUS_PX = 18.0
-SLM_SEND_DEBOUNCE_SECONDS = 1.0 / 30.0  # 30 FPS (0.0333 seconds)
-DEFAULT_METRICS_HISTORY = 1000
-MOVING_AVERAGE_WINDOW = 50  # Number of points to average for plot display
+# Image display defaults
+DEFAULT_SLM_WIDTH = _DASHBOARD_CONFIG.get("image", {}).get("default_slm_width", 1920)
+DEFAULT_SLM_HEIGHT = _DASHBOARD_CONFIG.get("image", {}).get("default_slm_height", 1152)
+DEFAULT_POINT_INTENSITY = _DASHBOARD_CONFIG.get("image", {}).get("default_point_intensity", 0.9)
+POINT_SELECTION_RADIUS_PX = _DASHBOARD_CONFIG.get("image", {}).get("point_selection_radius_px", 18.0)
+
+# SLM defaults
+SLM_SEND_DEBOUNCE_SECONDS = _DASHBOARD_CONFIG.get("slm", {}).get("send_debounce_seconds", 0.0333)
+
+# Monitoring defaults
+DEFAULT_METRICS_HISTORY = _DASHBOARD_CONFIG.get("monitoring", {}).get("default_metrics_history", 1000)
+MOVING_AVERAGE_WINDOW = _DASHBOARD_CONFIG.get("monitoring", {}).get("moving_average_window", 50)
 
 # UI Layout Constants
-PLOT_HEIGHT = 200
-HARDWARE_WINDOW_HEIGHT = 900
-IMAGE_METRICS_WINDOW_HEIGHT = 600
-SLM_METRICS_WINDOW_HEIGHT = 300
+_dimensions = _DASHBOARD_CONFIG.get("dimensions", {})
+PLOT_HEIGHT = _dimensions.get("plot_height", 200)
+HARDWARE_WINDOW_HEIGHT = _dimensions.get("hardware_window_height", 900)
+IMAGE_METRICS_WINDOW_HEIGHT = _dimensions.get("image_metrics_window_height", 600)
+SLM_METRICS_WINDOW_HEIGHT = _dimensions.get("slm_metrics_window_height", 300)
 
 # Color Scheme - Distinct section colors
-HARDWARE_COLOR = (220, 80, 80, 255)      # Reddish - Hardware/Arduino
-IMAGE_COLOR = (80, 200, 90, 255)         # Greenish - Image/Camera
-SLM_COLOR = (230, 180, 60, 255)          # Yellowish - SLM/Hologram
-STATUS_CONNECTED = (80, 220, 90, 255)    # Bright green for connected
-STATUS_DISCONNECTED = (220, 60, 60, 255) # Red for disconnected
-TEXT_PRIMARY = (230, 230, 230, 255)      # Light gray text
-TEXT_SECONDARY = (180, 180, 180, 255)    # Secondary text
+_colors = _DASHBOARD_CONFIG.get("colors", {})
+HARDWARE_COLOR = tuple(_colors.get("hardware", [220, 80, 80, 255]))
+IMAGE_COLOR = tuple(_colors.get("image", [80, 200, 90, 255]))
+SLM_COLOR = tuple(_colors.get("slm", [230, 180, 60, 255]))
+STATUS_CONNECTED = tuple(_colors.get("status_connected", [80, 220, 90, 255]))
+STATUS_DISCONNECTED = tuple(_colors.get("status_disconnected", [220, 60, 60, 255]))
+TEXT_PRIMARY = tuple(_colors.get("text_primary", [230, 230, 230, 255]))
+TEXT_SECONDARY = tuple(_colors.get("text_secondary", [180, 180, 180, 255]))
 
 
 def _compute_moving_average(values: Iterable[float], window: int = MOVING_AVERAGE_WINDOW) -> List[float]:
@@ -788,6 +1046,7 @@ class AggregateControllerStreaming:
         slm_config_manager: SlmConfigManager,
         slm_feature_config_manager: SlmFeatureConfigManager,
         tracking_config_manager: TrackingConfigManager,
+        dashboard_config_manager: DashboardConfigManager,
     ) -> None:
         self.image_state = image_state
         self.image_client = image_client
@@ -836,6 +1095,10 @@ class AggregateControllerStreaming:
         # Load current tracking configuration
         current_tracking_config = self.tracking_config_manager.get_current_config()
         self.current_tracking_params = current_tracking_config.get_detection_params()
+        
+        # Dashboard Configuration Manager
+        self.dashboard_config_manager = dashboard_config_manager
+        self.saved_window_layout: Optional[Dict[str, Dict[str, Any]]] = None
         
         self.dragging_point_index: Optional[int] = None
         self.mouse_pos_image: Tuple[float, float] = (0.0, 0.0)  # Mouse position in image coordinates
@@ -1364,6 +1627,385 @@ class AggregateControllerStreaming:
                         dpg.set_value(input_id, value)
         except Exception as exc:
             logging.error("Failed to update tracking parameters UI: %s", exc)
+    
+    # Dashboard UI Configuration Management
+    
+    def save_ui_config(self, name: str, description: str = "") -> bool:
+        """Save current UI configuration."""
+        try:
+            if not self.ui or not hasattr(self, 'dashboard_config_manager'):
+                return False
+            
+            # Capture current UI state
+            viewport_width = dpg.get_viewport_width()
+            viewport_height = dpg.get_viewport_height()
+            
+            # Save DearPyGui's internal docking layout to a temporary ini file
+            # This captures the complete docking state including tabs, splits, and parent-child relationships
+            layout_ini_path = self.dashboard_config_manager.config_path.parent / f".layout_{name}.ini"
+            try:
+                dpg.save_init_file(str(layout_ini_path))
+                with open(layout_ini_path, 'r', encoding='utf-8') as f:
+                    docking_layout = f.read()
+            except Exception as exc:
+                logging.warning(f"Could not save docking layout: {exc}")
+                docking_layout = None
+            
+            # Capture window positions and sizes
+            windows = {}
+            window_tags = {
+                'connections': getattr(self.ui, 'connection_window', None),
+                'monitoring': getattr(self.ui, 'monitoring_window', None),
+                'experiment_scripts': getattr(self.ui, 'experiment_script_window', None),
+                'image_viewer': getattr(self.ui, 'viewer_window', None),
+                'image_display_controls': getattr(self.ui, 'image_display_window', None),
+                'image_saving': getattr(self.ui, 'image_saving_window', None),
+                'environment_dac': getattr(self.ui, 'env_window', None),
+                'hardware_monitoring': getattr(self.ui, 'hardware_window', None),
+                'image_metrics': getattr(self.ui, 'image_metrics_window', None),
+                'slm_metrics': getattr(self.ui, 'slm_metrics_window', None),
+                'tracking_parameters': getattr(self.ui, 'tracking_window', None),
+                'slm_control': getattr(self.ui, 'slm_window', None),
+                'ui_config': getattr(self.ui, 'ui_config_window', None) if hasattr(self.ui, 'ui_config_window') else None,
+            }
+            
+            for window_name, tag in window_tags.items():
+                if tag and dpg.does_item_exist(tag):
+                    pos = dpg.get_item_pos(tag)
+                    size = dpg.get_item_rect_size(tag)
+                    item_config = dpg.get_item_configuration(tag)
+                    windows[window_name] = {
+                        'x': pos[0] if pos else None,
+                        'y': pos[1] if pos else None,
+                        'width': size[0] if size else None,
+                        'height': size[1] if size else None,
+                        'collapsed': item_config.get('collapsed', False),
+                        'show': item_config.get('show', True),
+                        # Save scroll position if scrollable
+                        'scroll_x': dpg.get_x_scroll(tag) if dpg.does_item_exist(tag) else 0.0,
+                        'scroll_y': dpg.get_y_scroll(tag) if dpg.does_item_exist(tag) else 0.0,
+                    }
+            
+            # Capture current settings
+            config = DashboardConfig(
+                name=name,
+                description=description,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                viewport={
+                    'width': viewport_width,
+                    'height': viewport_height,
+                    'title': dpg.get_viewport_title(),
+                },
+                windows=windows,
+                docking_layout=docking_layout,
+                image_display={
+                    'display_mode': self.image_state.display_mode if hasattr(self.image_state, 'display_mode') else 'overlay',
+                    'show_tile_grid': self.image_state.show_tile_grid if hasattr(self.image_state, 'show_tile_grid') else False,
+                    'zoom': self.image_state.zoom,
+                    'use_mass_colormap': self.image_state.use_mass_colormap if hasattr(self.image_state, 'use_mass_colormap') else True,
+                    'mass_cutoff': self.image_state.mass_cutoff if hasattr(self.image_state, 'mass_cutoff') else 600.0,
+                    'below_cutoff_color': list(self.image_state.below_cutoff_color) if hasattr(self.image_state, 'below_cutoff_color') else [255, 255, 255],
+                    'above_cutoff_color': list(self.image_state.above_cutoff_color) if hasattr(self.image_state, 'above_cutoff_color') else [255, 0, 0],
+                    'circle_scale': self.image_state.circle_scale if hasattr(self.image_state, 'circle_scale') else 1.0,
+                },
+                slm_visualization={
+                    'circle_color': list(self.circle_color),
+                    'circle_radius': self.circle_radius,
+                    'circle_thickness': self.circle_thickness,
+                },
+                hardware_monitoring={
+                    'history_limit': self.metrics_history_limit,
+                    'show_temperature': True,
+                    'show_humidity': True,
+                    'show_analog_channels': True,
+                },
+                image_metrics={
+                    'history_limit': self.metrics_history_limit,
+                    'show_latency': True,
+                    'show_processing': True,
+                    'show_render': True,
+                    'show_features': True,
+                    'show_save': True,
+                    'show_compression': True,
+                },
+                storage={
+                    'auto_save_raw': self.image_state.auto_save_raw if hasattr(self.image_state, 'auto_save_raw') else False,
+                    'auto_save_overlay': self.image_state.auto_save_overlay if hasattr(self.image_state, 'auto_save_overlay') else False,
+                    'save_hdf5': self.image_state.save_hdf5 if hasattr(self.image_state, 'save_hdf5') else False,
+                    'target_fps': self.image_state.storage_target_fps if hasattr(self.image_state, 'storage_target_fps') else 30.0,
+                },
+                monitoring={
+                    'interval_seconds': self.monitoring_interval,
+                    'auto_start': False,
+                },
+                experiment=self._get_current_experiment_params(),
+                theme=self._get_current_theme_colors(),
+            )
+            
+            return self.dashboard_config_manager.save_config(name, config)
+        except Exception as exc:
+            logging.error(f"Failed to save UI config '{name}': {exc}")
+            return False
+    
+    def load_ui_config(self, name: str) -> bool:
+        """Load and apply UI configuration."""
+        try:
+            if not hasattr(self, 'dashboard_config_manager'):
+                return False
+            
+            config = self.dashboard_config_manager.load_config(name)
+            if not config:
+                return False
+            
+            # Apply viewport settings
+            if config.viewport:
+                dpg.configure_viewport(
+                    dpg.get_active_window(),
+                    width=config.viewport.get('width', 2560),
+                    height=config.viewport.get('height', 1400),
+                    title=config.viewport.get('title', 'Tweezer Control & Monitoring'),
+                )
+            
+            # Restore DearPyGui docking layout from ini file if available
+            if config.docking_layout:
+                try:
+                    # Write the ini content to a temporary file and load it
+                    layout_ini_path = self.dashboard_config_manager.config_path.parent / f".layout_{name}_restore.ini"
+                    with open(layout_ini_path, 'w', encoding='utf-8') as f:
+                        f.write(config.docking_layout)
+                    dpg.configure_app(init_file=str(layout_ini_path))
+                    logging.info(f"Restored docking layout from config '{name}'")
+                except Exception as exc:
+                    logging.warning(f"Could not restore docking layout: {exc}")
+            
+            # Apply window positions and sizes
+            if config.windows and self.ui:
+                window_tags = {
+                    'connections': getattr(self.ui, 'connection_window', None),
+                    'monitoring': getattr(self.ui, 'monitoring_window', None),
+                    'experiment_scripts': getattr(self.ui, 'experiment_script_window', None),
+                    'image_viewer': getattr(self.ui, 'viewer_window', None),
+                    'image_display_controls': getattr(self.ui, 'image_display_window', None),
+                    'image_saving': getattr(self.ui, 'image_saving_window', None),
+                    'environment_dac': getattr(self.ui, 'env_window', None),
+                    'hardware_monitoring': getattr(self.ui, 'hardware_window', None),
+                    'image_metrics': getattr(self.ui, 'image_metrics_window', None),
+                    'slm_metrics': getattr(self.ui, 'slm_metrics_window', None),
+                    'tracking_parameters': getattr(self.ui, 'tracking_window', None),
+                    'slm_control': getattr(self.ui, 'slm_window', None),
+                    'ui_config': getattr(self.ui, 'ui_config_window', None) if hasattr(self.ui, 'ui_config_window') else None,
+                }
+                
+                for window_name, tag in window_tags.items():
+                    if tag and dpg.does_item_exist(tag) and window_name in config.windows:
+                        win_cfg = config.windows[window_name]
+                        
+                        # Restore position and size
+                        if win_cfg.get('x') is not None and win_cfg.get('y') is not None:
+                            dpg.set_item_pos(tag, [win_cfg['x'], win_cfg['y']])
+                        if win_cfg.get('width') is not None and win_cfg.get('height') is not None:
+                            dpg.configure_item(tag, width=win_cfg['width'], height=win_cfg['height'])
+                        
+                        # Restore collapsed state
+                        if win_cfg.get('collapsed') is not None:
+                            dpg.configure_item(tag, collapsed=win_cfg['collapsed'])
+                        
+                        # Restore visibility
+                        if win_cfg.get('show') is not None:
+                            dpg.configure_item(tag, show=win_cfg['show'])
+                        
+                        # Restore scroll positions
+                        if win_cfg.get('scroll_x') is not None:
+                            try:
+                                dpg.set_x_scroll(tag, win_cfg['scroll_x'])
+                            except Exception:
+                                pass  # Not all windows are scrollable
+                        if win_cfg.get('scroll_y') is not None:
+                            try:
+                                dpg.set_y_scroll(tag, win_cfg['scroll_y'])
+                            except Exception:
+                                pass  # Not all windows are scrollable
+            
+            # Store for later use by resize callback (legacy support)
+            self.saved_window_layout = config.windows
+            
+            # Apply image display settings
+            if config.image_display:
+                display = config.image_display
+                if 'display_mode' in display:
+                    self.image_state.set_display_mode(display['display_mode'])
+                if 'show_tile_grid' in display:
+                    self.image_state.set_show_tile_grid(display['show_tile_grid'])
+                if 'zoom' in display:
+                    self.image_state.set_zoom(display['zoom'])
+                if 'use_mass_colormap' in display:
+                    self.image_state.set_use_mass_colormap(display['use_mass_colormap'])
+                if 'mass_cutoff' in display:
+                    self.image_state.set_mass_cutoff(display['mass_cutoff'])
+                if 'circle_scale' in display:
+                    self.image_state.set_circle_scale(display['circle_scale'])
+                
+                # Update UI controls
+                if self.ui:
+                    if self.ui.display_mode_combo and dpg.does_item_exist(self.ui.display_mode_combo):
+                        dpg.set_value(self.ui.display_mode_combo, display.get('display_mode', 'overlay'))
+                    if self.ui.tile_grid_checkbox and dpg.does_item_exist(self.ui.tile_grid_checkbox):
+                        dpg.set_value(self.ui.tile_grid_checkbox, display.get('show_tile_grid', False))
+                    if self.ui.zoom_slider and dpg.does_item_exist(self.ui.zoom_slider):
+                        dpg.set_value(self.ui.zoom_slider, display.get('zoom', 1.0))
+                    if self.ui.use_colormap_checkbox and dpg.does_item_exist(self.ui.use_colormap_checkbox):
+                        dpg.set_value(self.ui.use_colormap_checkbox, display.get('use_mass_colormap', True))
+                    if self.ui.mass_cutoff_input and dpg.does_item_exist(self.ui.mass_cutoff_input):
+                        dpg.set_value(self.ui.mass_cutoff_input, display.get('mass_cutoff', 600.0))
+                    if self.ui.circle_scale_slider and dpg.does_item_exist(self.ui.circle_scale_slider):
+                        dpg.set_value(self.ui.circle_scale_slider, display.get('circle_scale', 1.0))
+            
+            # Apply SLM visualization settings
+            if config.slm_visualization:
+                slm_viz = config.slm_visualization
+                self.circle_color = tuple(slm_viz.get('circle_color', [255, 0, 0, 255]))
+                self.circle_radius = slm_viz.get('circle_radius', 15.0)
+                self.circle_thickness = slm_viz.get('circle_thickness', 2)
+                
+                if self.ui:
+                    if self.ui.slm_circle_color_picker and dpg.does_item_exist(self.ui.slm_circle_color_picker):
+                        dpg.set_value(self.ui.slm_circle_color_picker, self.circle_color)
+                    if self.ui.slm_circle_size_slider and dpg.does_item_exist(self.ui.slm_circle_size_slider):
+                        dpg.set_value(self.ui.slm_circle_size_slider, self.circle_radius)
+                    if self.ui.slm_circle_thickness_slider and dpg.does_item_exist(self.ui.slm_circle_thickness_slider):
+                        dpg.set_value(self.ui.slm_circle_thickness_slider, self.circle_thickness)
+            
+            # Apply hardware monitoring settings
+            if config.hardware_monitoring:
+                hw_mon = config.hardware_monitoring
+                if 'history_limit' in hw_mon:
+                    self.set_hardware_history_limit(hw_mon['history_limit'])
+            
+            # Apply image metrics settings
+            if config.image_metrics:
+                img_met = config.image_metrics
+                if 'history_limit' in img_met:
+                    self.set_image_history_limit(img_met['history_limit'])
+            
+            # Apply storage settings
+            if config.storage:
+                storage = config.storage
+                try:
+                    if 'auto_save_raw' in storage:
+                        self.image_state.set_auto_save_raw(storage['auto_save_raw'])
+                    if 'auto_save_overlay' in storage:
+                        self.image_state.set_auto_save_overlay(storage['auto_save_overlay'])
+                    if 'save_hdf5' in storage:
+                        self.image_state.set_save_hdf5(storage['save_hdf5'])
+                    if 'target_fps' in storage:
+                        self.image_state.set_storage_target_fps(storage['target_fps'])
+                except Exception as exc:
+                    logging.warning(f"Some storage settings could not be applied: {exc}")
+            
+            # Apply monitoring settings
+            if config.monitoring:
+                mon = config.monitoring
+                if 'interval_seconds' in mon:
+                    self.set_monitoring_interval(mon['interval_seconds'])
+            
+            # Apply experiment settings
+            if config.experiment and self.ui:
+                self._apply_experiment_params(config.experiment)
+            
+            logging.info(f"Loaded UI configuration: {name}")
+            return True
+        except Exception as exc:
+            logging.error(f"Failed to load UI config '{name}': {exc}")
+            return False
+    
+    def set_default_ui_config(self, name: str) -> bool:
+        """Set a configuration as the default."""
+        try:
+            if not hasattr(self, 'dashboard_config_manager'):
+                return False
+            return self.dashboard_config_manager.set_active_config(name)
+        except Exception as exc:
+            logging.error(f"Failed to set default UI config: {exc}")
+            return False
+    
+    def delete_ui_config(self, name: str) -> bool:
+        """Delete a UI configuration."""
+        try:
+            if not hasattr(self, 'dashboard_config_manager'):
+                return False
+            return self.dashboard_config_manager.delete_config(name)
+        except Exception as exc:
+            logging.error(f"Failed to delete UI config '{name}': {exc}")
+            return False
+    
+    def list_ui_configs(self) -> List[str]:
+        """List all UI configurations."""
+        if not hasattr(self, 'dashboard_config_manager'):
+            return []
+        return self.dashboard_config_manager.list_configs()
+    
+    def get_current_ui_config_name(self) -> str:
+        """Get current UI configuration name."""
+        if not hasattr(self, 'dashboard_config_manager'):
+            return "default"
+        return self.dashboard_config_manager.active_config_name
+    
+    def _get_current_experiment_params(self) -> Dict[str, Any]:
+        """Get current experiment parameters from UI."""
+        params = {}
+        if self.ui:
+            if self.ui.experiment_move_time_min:
+                params['move_time_min'] = dpg.get_value(self.ui.experiment_move_time_min)
+            if self.ui.experiment_move_time_max:
+                params['move_time_max'] = dpg.get_value(self.ui.experiment_move_time_max)
+            if self.ui.experiment_distance_min:
+                params['distance_min'] = dpg.get_value(self.ui.experiment_distance_min)
+            if self.ui.experiment_distance_max:
+                params['distance_max'] = dpg.get_value(self.ui.experiment_distance_max)
+            if self.ui.experiment_delay:
+                params['delay'] = dpg.get_value(self.ui.experiment_delay)
+            if self.ui.experiment_separation:
+                params['separation'] = dpg.get_value(self.ui.experiment_separation)
+            if self.ui.experiment_edge_margin:
+                params['edge_margin'] = dpg.get_value(self.ui.experiment_edge_margin)
+            if self.ui.experiment_slm_refresh:
+                params['slm_refresh'] = dpg.get_value(self.ui.experiment_slm_refresh)
+        return params
+    
+    def _apply_experiment_params(self, params: Dict[str, Any]) -> None:
+        """Apply experiment parameters to UI."""
+        if not self.ui:
+            return
+        
+        if 'move_time_min' in params and self.ui.experiment_move_time_min:
+            dpg.set_value(self.ui.experiment_move_time_min, params['move_time_min'])
+        if 'move_time_max' in params and self.ui.experiment_move_time_max:
+            dpg.set_value(self.ui.experiment_move_time_max, params['move_time_max'])
+        if 'distance_min' in params and self.ui.experiment_distance_min:
+            dpg.set_value(self.ui.experiment_distance_min, params['distance_min'])
+        if 'distance_max' in params and self.ui.experiment_distance_max:
+            dpg.set_value(self.ui.experiment_distance_max, params['distance_max'])
+        if 'delay' in params and self.ui.experiment_delay:
+            dpg.set_value(self.ui.experiment_delay, params['delay'])
+        if 'separation' in params and self.ui.experiment_separation:
+            dpg.set_value(self.ui.experiment_separation, params['separation'])
+        if 'edge_margin' in params and self.ui.experiment_edge_margin:
+            dpg.set_value(self.ui.experiment_edge_margin, params['edge_margin'])
+        if 'slm_refresh' in params and self.ui.experiment_slm_refresh:
+            dpg.set_value(self.ui.experiment_slm_refresh, params['slm_refresh'])
+    
+    def _get_current_theme_colors(self) -> Dict[str, Any]:
+        """Get current theme colors."""
+        # For now, return defaults - can be extended to capture actual theme
+        return {
+            'hardware_color': [220, 80, 80, 255],
+            'image_color': [80, 200, 90, 255],
+            'slm_color': [230, 180, 60, 255],
+            'status_connected': [80, 220, 90, 255],
+            'status_disconnected': [220, 60, 60, 255],
+            'text_primary': [230, 230, 230, 255],
+            'text_secondary': [180, 180, 180, 255],
+        }
     
     def find_point_at_position(self, x: float, y: float, radius: float = POINT_SELECTION_RADIUS_PX) -> Optional[int]:
         """Find the index of a point near the given position, or None."""
@@ -2911,6 +3553,112 @@ def _on_tracking_config_apply(sender: int, app_data: Any, user_data: AggregateCo
             dpg.add_button(label="OK", callback=lambda: dpg.delete_item("tracking_config_apply_error_dialog"))
 
 
+# Dashboard UI Configuration Callbacks
+
+def _on_ui_config_save(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle saving current UI configuration."""
+    controller = user_data
+    
+    def save_config_dialog():
+        with dpg.window(label="Save UI Configuration", modal=True, tag="ui_save_config_dialog"):
+            dpg.add_text("Enter configuration name:")
+            dpg.add_input_text(tag="ui_config_name_input", width=300)
+            dpg.add_text("Description (optional):")
+            dpg.add_input_text(tag="ui_config_desc_input", width=300, multiline=True, height=60)
+            dpg.add_button(label="Save", callback=_confirm_ui_config_save, user_data=controller)
+            dpg.add_button(label="Cancel", callback=lambda: dpg.delete_item("ui_save_config_dialog"))
+    
+    save_config_dialog()
+
+
+def _confirm_ui_config_save(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Confirm and save UI configuration."""
+    controller = user_data
+    
+    name = dpg.get_value("ui_config_name_input").strip()
+    description = dpg.get_value("ui_config_desc_input").strip()
+    
+    if not name:
+        logging.warning("Configuration name cannot be empty")
+        return
+    
+    success = controller.save_ui_config(name, description)
+    dpg.delete_item("ui_save_config_dialog")
+    
+    if success:
+        logging.info(f"Saved UI configuration: {name}")
+        # Update dropdown
+        if controller.ui and controller.ui.ui_config_combo:
+            configs = controller.list_ui_configs()
+            dpg.configure_item(controller.ui.ui_config_combo, items=configs, default_value=name)
+    else:
+        logging.error(f"Failed to save UI configuration: {name}")
+
+
+def _on_ui_config_load(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle loading UI configuration from dropdown."""
+    controller = user_data
+    if controller.ui and controller.ui.ui_config_combo:
+        config_name = dpg.get_value(controller.ui.ui_config_combo)
+        if config_name:
+            success = controller.load_ui_config(config_name)
+            if not success:
+                logging.error(f"Failed to load UI configuration: {config_name}")
+
+
+def _on_ui_config_set_default(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle setting current configuration as default."""
+    controller = user_data
+    if controller.ui and controller.ui.ui_config_combo:
+        config_name = dpg.get_value(controller.ui.ui_config_combo)
+        if config_name:
+            success = controller.set_default_ui_config(config_name)
+            if success:
+                logging.info(f"Set default UI configuration: {config_name}")
+            else:
+                logging.error(f"Failed to set default UI configuration: {config_name}")
+
+
+def _on_ui_config_delete(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle deleting selected UI configuration."""
+    controller = user_data
+    if controller.ui and controller.ui.ui_config_combo:
+        config_name = dpg.get_value(controller.ui.ui_config_combo)
+        if config_name:
+            if config_name == "default":
+                logging.warning("Cannot delete default configuration")
+                return
+            
+            # Show confirmation dialog
+            def confirm_delete():
+                with dpg.window(label="Confirm Delete", modal=True, tag="ui_config_delete_confirm_dialog"):
+                    dpg.add_text(f"Are you sure you want to delete UI configuration '{config_name}'?")
+                    dpg.add_button(label="Yes", callback=_confirm_ui_config_delete, user_data=(controller, config_name))
+                    dpg.add_button(label="No", callback=lambda: dpg.delete_item("ui_config_delete_confirm_dialog"))
+            
+            confirm_delete()
+
+
+def _confirm_ui_config_delete(sender: int, app_data: Any, user_data: Tuple[AggregateControllerStreaming, str]) -> None:
+    """Confirm deletion of UI configuration."""
+    controller, config_name = user_data
+    
+    success = controller.delete_ui_config(config_name)
+    dpg.delete_item("ui_config_delete_confirm_dialog")
+    
+    if success:
+        logging.info(f"Deleted UI configuration: {config_name}")
+        # Update dropdown
+        if controller.ui and controller.ui.ui_config_combo:
+            configs = controller.list_ui_configs()
+            current_config = controller.get_current_ui_config_name()
+            dpg.configure_item(controller.ui.ui_config_combo, items=configs, default_value=current_config)
+            # Load the current config
+            controller.load_ui_config(current_config)
+    else:
+        logging.error(f"Failed to delete UI configuration: {config_name}")
+
+
 def _on_circle_color_changed(sender: int, app_data: Sequence[float], user_data: AggregateControllerStreaming) -> None:
     """Handle circle color change."""
     controller = user_data
@@ -3386,6 +4134,58 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         slm_connection_status_label = dpg.add_text("Disconnected", color=STATUS_DISCONNECTED)
         slm_connect_button = dpg.add_button(label="Connect SLM", callback=_on_slm_connect,
                                             user_data=controller, width=-1, height=26)
+
+    # UI Configuration Management window
+    ui_config_window = dpg.generate_uuid()
+    with dpg.window(label="UI CONFIGURATION", tag=ui_config_window, no_close=True):
+        dpg.add_text("LAYOUT & PREFERENCES", color=(180, 140, 255, 255))
+        
+        # Configuration selector
+        ui_configs = controller.list_ui_configs()
+        current_ui_config = controller.get_current_ui_config_name()
+        ui_config_combo = dpg.add_combo(
+            ui_configs, 
+            default_value=current_ui_config,
+            label="Config",
+            width=-1,
+            callback=_on_ui_config_load,
+            user_data=controller
+        )
+        
+        dpg.add_spacing(count=1)
+        
+        # Configuration management buttons
+        with dpg.group(horizontal=True):
+            ui_config_save_button = dpg.add_button(
+                label="Save",
+                callback=_on_ui_config_save,
+                user_data=controller,
+                width=75
+            )
+            ui_config_load_button = dpg.add_button(
+                label="Load",
+                callback=_on_ui_config_load,
+                user_data=controller,
+                width=75
+            )
+        
+        with dpg.group(horizontal=True):
+            ui_config_set_default_button = dpg.add_button(
+                label="Set Default",
+                callback=_on_ui_config_set_default,
+                user_data=controller,
+                width=75
+            )
+            ui_config_delete_button = dpg.add_button(
+                label="Delete",
+                callback=_on_ui_config_delete,
+                user_data=controller,
+                width=75
+            )
+        
+        dpg.add_spacing(count=1)
+        dpg.add_text("Save: Captures current UI state", color=TEXT_SECONDARY, wrap=150)
+        dpg.add_text("Load: Restores saved UI state", color=TEXT_SECONDARY, wrap=150)
 
     # Metrics Monitoring window
     monitoring_window = dpg.generate_uuid()
@@ -4575,6 +5375,24 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         experiment_separation=experiment_separation,
         experiment_edge_margin=experiment_edge_margin,
         experiment_slm_refresh=experiment_slm_refresh,
+        ui_config_combo=ui_config_combo,
+        ui_config_save_button=ui_config_save_button,
+        ui_config_load_button=ui_config_load_button,
+        ui_config_set_default_button=ui_config_set_default_button,
+        ui_config_delete_button=ui_config_delete_button,
+        connection_window=connection_window,
+        ui_config_window=ui_config_window,
+        monitoring_window=monitoring_window,
+        experiment_script_window=experiment_script_window,
+        viewer_window=viewer_window,
+        image_display_window=image_display_window,
+        image_saving_window=image_saving_window,
+        env_window=env_window,
+        hardware_window=hardware_window,
+        image_metrics_window=image_metrics_window,
+        slm_metrics_window=slm_metrics_window,
+        tracking_window=tracking_window,
+        slm_window=slm_window,
     )
 
     # Setup initial window layout - responsive sizing
@@ -4597,23 +5415,27 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
             dpg.configure_item(connection_window, 
                              pos=(10, 35), 
                              width=left_col_width, 
-                             height=int(viewport_height * 0.23))
+                             height=int(viewport_height * 0.18))
+            dpg.configure_item(ui_config_window,
+                             pos=(10, int(viewport_height * 0.18) + 45),
+                             width=left_col_width,
+                             height=int(viewport_height * 0.10))
             dpg.configure_item(monitoring_window,
-                             pos=(10, int(viewport_height * 0.23) + 45),
+                             pos=(10, int(viewport_height * 0.28) + 55),
                              width=left_col_width,
                              height=int(viewport_height * 0.10))
             dpg.configure_item(experiment_script_window,
-                             pos=(10, int(viewport_height * 0.33) + 55),
+                             pos=(10, int(viewport_height * 0.38) + 65),
                              width=left_col_width,
                              height=int(viewport_height * 0.15))
             dpg.configure_item(env_window, 
-                             pos=(10, int(viewport_height * 0.48) + 65), 
+                             pos=(10, int(viewport_height * 0.53) + 75), 
                              width=left_col_width, 
-                             height=int(viewport_height * 0.25))
+                             height=int(viewport_height * 0.20))
             dpg.configure_item(tracking_window, 
-                             pos=(10, int(viewport_height * 0.73) + 75), 
+                             pos=(10, int(viewport_height * 0.73) + 85), 
                              width=left_col_width, 
-                             height=viewport_height - int(viewport_height * 0.73) - 85)
+                             height=viewport_height - int(viewport_height * 0.73) - 95)
             
             # Center column
             dpg.configure_item(viewer_window, 
@@ -4688,8 +5510,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--due-port", type=int, default=None, help="Override Due streaming server port")
     parser.add_argument("--slm-host", default=None, help="Override SLM server host")
     parser.add_argument("--slm-port", type=int, default=None, help="Override SLM server port")
-    parser.add_argument("--pin-config", type=Path, default=_REPO_ROOT / "Arduino" / "pin_config.json",
-                       help="Pin configuration JSON")
+    parser.add_argument("--pin-config", type=Path, default=None,
+                       help="Pin configuration JSON (default from services config)")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -4720,8 +5542,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     due_endpoint = EndpointConfig(due_host, due_port)
     slm_endpoint = EndpointConfig(slm_host, slm_port)
     
+    # Load services config for global settings
+    services_config = _load_services_config(args.services_config)
+    global_config = services_config.get("global", {})
+    
+    # Get pin config path from services config or CLI arg
+    if args.pin_config:
+        pin_config_path = args.pin_config
+    else:
+        pin_config_default = global_config.get("pin_config_path", "../Arduino/pin_config.json")
+        pin_config_path = Path(__file__).parent / pin_config_default
+    
     # Load configuration
-    config = _load_pin_config(args.pin_config)
+    config = _load_pin_config(pin_config_path)
     dac_specs, analog_specs, shtc3_labels = _build_channel_specs(config)
     
     # Find SHTC3 spec for connection (if any)
@@ -4738,10 +5571,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             break
     
-    # Load SLM configuration manager
-    dashboard_endpoints = _load_dashboard_endpoints(args.services_config)
-    services_config = _load_services_config(args.services_config)
-    global_config = services_config.get("global", {})
+    # Load SLM configuration manager (services_config already loaded above)
     slm_config_dir = global_config.get("slm_config_dir", "slm_config")
     feature_config_dir = global_config.get("slm_feature_config_dir", "slm_feature_config")
     
@@ -4755,6 +5585,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     tracking_config_dir = global_config.get("tracking_config_dir", "../Camera/tracking_config")
     tracking_config_path = Path(__file__).parent / tracking_config_dir
     tracking_config_manager = TrackingConfigManager(tracking_config_path)
+    
+    # Load dashboard UI configuration manager
+    dashboard_config_path = Path(__file__).parent / "dashboard_config.yaml"
+    dashboard_config_manager = DashboardConfigManager(dashboard_config_path)
     
     # Create components
     image_state = ImageAppState(
@@ -4775,6 +5609,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         slm_config_manager=slm_config_manager,
         slm_feature_config_manager=slm_feature_config_manager,
         tracking_config_manager=tracking_config_manager,
+        dashboard_config_manager=dashboard_config_manager,
     )
     
     ui = create_ui(controller, shtc3_labels)

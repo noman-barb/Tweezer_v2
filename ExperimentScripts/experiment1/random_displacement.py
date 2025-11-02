@@ -262,9 +262,10 @@ class RandomParticleDisplacement(ExperimentScript):
             # Log action completion to CSV
             self._log_action_to_csv(ctx)
             
-            # Set final position
-            self.trap_positions = [(target_x, target_y, self.trap_z_offset, self.trap_intensity)]
-            ctx.set_slm_points(self.trap_positions)
+            # Clear SLM traps immediately when action is complete
+            ctx.set_slm_points([])
+            self.trap_positions = []
+            ctx.log("Action complete - cleared SLM hologram", "INFO")
             
             # Transition to waiting state
             self._transition_to_state(ExperimentState.WAITING, ctx)
