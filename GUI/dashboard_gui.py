@@ -38,6 +38,7 @@ _EXTRA_PATHS = [
     _REPO_ROOT / "Arduino" / "rpc",
     _REPO_ROOT / "SLM" / "slm-control-server",
     _REPO_ROOT / "services",  # Add services for slm_config import
+    _REPO_ROOT / "ExperimentScripts",  # Add experiment scripts
 ]
 for _path in _EXTRA_PATHS:
     if _path.is_dir() and str(_path) not in sys.path:
@@ -84,6 +85,10 @@ from slm_config.slm_feature_config_manager import (  # type: ignore  # noqa: E40
 import sys
 sys.path.insert(0, str(_REPO_ROOT / "Camera"))
 from tracking_config.tracking_config_manager import TrackingConfigManager, TrackingConfig  # type: ignore  # noqa: E402
+
+# Experiment Scripts imports
+from base_script import ExperimentScript, ExperimentContext  # type: ignore  # noqa: E402
+from script_manager import ScriptManager  # type: ignore  # noqa: E402
 
 
 @dataclass
@@ -283,6 +288,23 @@ class AggregateUI:
     monitoring_path_text: Optional[int] = None
     monitoring_interval_input: Optional[int] = None
     monitoring_start_button: Optional[int] = None
+    # Experiment script controls
+    experiment_script_combo: Optional[int] = None
+    experiment_script_start_button: Optional[int] = None
+    experiment_script_stop_button: Optional[int] = None
+    experiment_script_pause_button: Optional[int] = None
+    experiment_script_reload_button: Optional[int] = None
+    experiment_script_status_text: Optional[int] = None
+    experiment_script_info_text: Optional[int] = None
+    # Experiment script parameters
+    experiment_move_time_min: Optional[int] = None
+    experiment_move_time_max: Optional[int] = None
+    experiment_distance_min: Optional[int] = None
+    experiment_distance_max: Optional[int] = None
+    experiment_delay: Optional[int] = None
+    experiment_separation: Optional[int] = None
+    experiment_edge_margin: Optional[int] = None
+    experiment_slm_refresh: Optional[int] = None
 
 
 def _snake_to_label(name: str) -> str:
@@ -843,6 +865,11 @@ class AggregateControllerStreaming:
         self.monitoring_folder: Optional[Path] = None
         self.monitoring_files: Dict[str, Path] = {}  # type -> file path
         self.monitoring_lock = threading.Lock()
+        
+        # Experiment script manager
+        scripts_dir = Path(__file__).parent.parent / "ExperimentScripts"
+        self.script_manager = ScriptManager(scripts_dir)
+        self.experiment_log_messages: deque[str] = deque(maxlen=100)
 
     def set_ui(self, ui: AggregateUI) -> None:
         self.ui = ui
@@ -858,6 +885,9 @@ class AggregateControllerStreaming:
         self.image_endpoint = EndpointConfig(host, port)
         self.image_client.connect(host, port)
         logging.info("Connected to image server at %s:%d", host, port)
+        
+        # Apply tracking configuration to server after connection
+        self.apply_tracking_config_to_server()
 
     def disconnect_image(self) -> None:
         self.image_client.disconnect()
@@ -1323,14 +1353,15 @@ class AggregateControllerStreaming:
     
     def _update_tracking_params_ui(self) -> None:
         """Update tracking parameter UI with current values."""
-        if self.ui is None or not hasattr(self.ui, 'tracking_inputs'):
+        if self.ui is None or self.ui.tracking_inputs is None:
             return
         
         try:
             for param_name, input_id in self.ui.tracking_inputs.items():
                 if param_name in self.current_tracking_params:
                     value = self.current_tracking_params[param_name]
-                    dpg.set_value(input_id, value)
+                    if dpg.does_item_exist(input_id):
+                        dpg.set_value(input_id, value)
         except Exception as exc:
             logging.error("Failed to update tracking parameters UI: %s", exc)
     
@@ -1461,6 +1492,8 @@ class AggregateControllerStreaming:
                 # Get latest frame from state
                 if self.image_state.latest_overlay_array is not None:
                     self._update_image_view_from_state()
+                    # Process experiment script on new frame
+                    self._process_experiment_script()
                 # Update image server metrics
                 self._update_image_metrics()
             
@@ -1475,6 +1508,9 @@ class AggregateControllerStreaming:
             # Update cursor
             self._update_cursor_label()
             
+            # Update experiment script status display
+            self._update_experiment_script_status()
+            
         except Exception as exc:
             logging.exception("Error in update loop: %s", exc)
 
@@ -1483,10 +1519,16 @@ class AggregateControllerStreaming:
         if not self.ui:
             return
         
-        # Use overlay if available, otherwise use latest image
-        frame = self.image_state.latest_overlay_array
-        if frame is None:
+        # Select frame based on display mode
+        if self.image_state.display_mode == "raw":
+            # Show raw image without tracking overlay
             frame = self.image_state.latest_image_uint8
+        else:
+            # Show overlay if available, otherwise use latest image
+            frame = self.image_state.latest_overlay_array
+            if frame is None:
+                frame = self.image_state.latest_image_uint8
+        
         if frame is None:
             return
         
@@ -2138,8 +2180,134 @@ class AggregateControllerStreaming:
                 except Exception as exc:
                     logging.error(f"Error writing SLM metrics: {exc}")
 
+    # Experiment script management
+    
+    def _build_experiment_context(self) -> ExperimentContext:
+        """Build experiment context with current system state."""
+        # Get tracked positions from image state
+        tracked_positions = []
+        if hasattr(self.image_state, 'tracks') and self.image_state.tracks:
+            for track in self.image_state.tracks:
+                # Track format: {'x': float, 'y': float, 'mass': float, ...}
+                if isinstance(track, dict):
+                    x = float(track.get('x', 0.0))
+                    y = float(track.get('y', 0.0))
+                    mass = float(track.get('mass', 0.0))
+                    tracked_positions.append((x, y, mass))
+        
+        # Build context
+        ctx = ExperimentContext(
+            current_image=self.image_state.latest_image_uint8 if hasattr(self.image_state, 'latest_image_uint8') else None,
+            tracked_positions=tracked_positions,
+            tracking_metadata={
+                'frame_number': self.image_state.frame_sequence if hasattr(self.image_state, 'frame_sequence') else 0,
+            },
+            frame_number=self.image_state.frame_sequence if hasattr(self.image_state, 'frame_sequence') else 0,
+            timestamp=time.time(),
+            slm_client=self.slm_client,
+            due_manager=self.due_manager,
+            slm_points=[(p.x, p.y, p.z, p.intensity) for p in self.slm_points],
+            dac_states=self.dac_values.copy(),
+            analog_states=self.analog_values.copy(),
+            slm_config=self.slm_config_manager.get_current_config(),
+            tracking_config=self.tracking_config_manager.get_current_config(),
+            feature_config=self.slm_feature_config_manager.get_current_config(),
+            metrics_history={},  # Could populate if needed
+        )
+        
+        # Set callback functions
+        ctx._set_slm_points_callback = self._experiment_set_slm_points
+        ctx._set_dac_value_callback = self._experiment_set_dac_value
+        ctx._log_callback = self._experiment_log
+        ctx._get_particle_at_callback = None  # Use default implementation
+        
+        return ctx
+    
+    def _experiment_set_slm_points(self, points: List[Tuple[float, float, float, float]]) -> None:
+        """Callback for experiment scripts to set SLM points."""
+        try:
+            # Convert to SlmPoint objects
+            self.slm_points.clear()
+            for x, y, z, intensity in points:
+                self.slm_points.append(SlmPoint(x=x, y=y, z=z, intensity=intensity))
+            
+            # Mark as dirty to trigger send
+            self.slm_dirty = True
+            
+            # Immediately send if connected
+            if self.slm_client.connected:
+                self.force_send_slm()
+                
+        except Exception as e:
+            logging.error(f"Error setting SLM points from experiment: {e}")
+    
+    def _experiment_set_dac_value(self, channel: str, value: float) -> None:
+        """Callback for experiment scripts to set DAC values."""
+        try:
+            if channel in self.dac_specs:
+                # Use the existing set_dac_value method which handles conversion
+                self.set_dac_value(channel, value)
+        except Exception as e:
+            logging.error(f"Error setting DAC value from experiment: {e}")
+    
+    def _experiment_log(self, message: str, level: str = "INFO") -> None:
+        """Callback for experiment scripts to log messages."""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_message = f"[{timestamp}] [{level}] {message}"
+        self.experiment_log_messages.append(log_message)
+        
+        # Also log to standard logger
+        if level == "ERROR":
+            logging.error(f"Experiment: {message}")
+        elif level == "WARNING":
+            logging.warning(f"Experiment: {message}")
+        elif level == "DEBUG":
+            logging.debug(f"Experiment: {message}")
+        else:
+            logging.info(f"Experiment: {message}")
+    
+    def _process_experiment_script(self) -> None:
+        """Process current frame with experiment script if running."""
+        if self.script_manager.current_script:
+            ctx = self._build_experiment_context()
+            self.script_manager.process_frame(ctx)
+    
+    def _update_experiment_script_status(self) -> None:
+        """Update experiment script status display in UI."""
+        if not self.ui or not self.ui.experiment_script_status_text:
+            return
+        
+        status = self.script_manager.get_current_status()
+        
+        if status['running']:
+            script_name = status.get('script_name', 'Unknown')
+            frames = status.get('frame_count', 0)
+            errors = status.get('error_count', 0)
+            paused = status.get('paused', False)
+            
+            if paused:
+                status_text = f"PAUSED: {script_name} (Frames: {frames}, Errors: {errors})"
+            else:
+                status_text = f"RUNNING: {script_name} (Frames: {frames}, Errors: {errors})"
+        else:
+            status_text = "No script running"
+        
+        dpg.set_value(self.ui.experiment_script_status_text, status_text)
+        
+        # Update log display if we have one
+        if self.ui.experiment_script_info_text and self.experiment_log_messages:
+            # Show last few log messages
+            recent_logs = list(self.experiment_log_messages)[-10:]
+            log_text = "\n".join(recent_logs)
+            dpg.set_value(self.ui.experiment_script_info_text, log_text)
+
     def shutdown(self) -> None:
         """Shutdown all connections."""
+        # Stop experiment script if running
+        if self.script_manager.current_script:
+            ctx = self._build_experiment_context()
+            self.script_manager.stop_script(ctx)
+        
         self.stop_monitoring()
         self.due_manager.shutdown()
         self.slm_client.shutdown()
@@ -2649,7 +2817,7 @@ def _confirm_tracking_config_save(sender: int, app_data: Any, user_data: Aggrega
     
     if success:
         # Update the configuration dropdown if it exists
-        if controller.ui and hasattr(controller.ui, 'tracking_config_combo'):
+        if controller.ui and controller.ui.tracking_config_combo:
             configs = controller.list_tracking_configs()
             dpg.configure_item(controller.ui.tracking_config_combo, items=configs, default_value=name)
     else:
@@ -2662,7 +2830,7 @@ def _confirm_tracking_config_save(sender: int, app_data: Any, user_data: Aggrega
 def _on_tracking_config_load(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
     """Handle loading tracking configuration from dropdown."""
     controller = user_data
-    if controller.ui and hasattr(controller.ui, 'tracking_config_combo'):
+    if controller.ui and controller.ui.tracking_config_combo:
         selected_config = dpg.get_value(controller.ui.tracking_config_combo)
         controller.load_tracking_config(selected_config)
 
@@ -2670,7 +2838,7 @@ def _on_tracking_config_load(sender: int, app_data: Any, user_data: AggregateCon
 def _on_tracking_config_set_default(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
     """Handle setting current configuration as default."""
     controller = user_data
-    if controller.ui and hasattr(controller.ui, 'tracking_config_combo'):
+    if controller.ui and controller.ui.tracking_config_combo:
         selected_config = dpg.get_value(controller.ui.tracking_config_combo)
         controller.set_default_tracking_config(selected_config)
 
@@ -2681,14 +2849,14 @@ def _on_tracking_config_reset(sender: int, app_data: Any, user_data: AggregateCo
     controller.reset_tracking_config_to_default()
     
     # Update the dropdown selection
-    if controller.ui and hasattr(controller.ui, 'tracking_config_combo'):
+    if controller.ui and controller.ui.tracking_config_combo:
         dpg.set_value(controller.ui.tracking_config_combo, "default")
 
 
 def _on_tracking_config_delete(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
     """Handle deleting selected tracking configuration."""
     controller = user_data
-    if controller.ui and hasattr(controller.ui, 'tracking_config_combo'):
+    if controller.ui and controller.ui.tracking_config_combo:
         selected_config = dpg.get_value(controller.ui.tracking_config_combo)
         
         if selected_config == "default":
@@ -2717,11 +2885,13 @@ def _confirm_tracking_config_delete(sender: int, app_data: Any, user_data: Tuple
     dpg.delete_item("tracking_config_delete_confirm_dialog")
     
     if success:
-        # Update the dropdown
-        if controller.ui and hasattr(controller.ui, 'tracking_config_combo'):
+        # Update the dropdown and load the current config
+        if controller.ui and controller.ui.tracking_config_combo:
             configs = controller.list_tracking_configs()
             current_config = controller.get_current_tracking_config_name()
             dpg.configure_item(controller.ui.tracking_config_combo, items=configs, default_value=current_config)
+            # Load the current config to update UI values
+            controller.load_tracking_config(current_config)
     else:
         # Show error message
         with dpg.window(label="Error", modal=True, tag="tracking_config_delete_error_dialog"):
@@ -2932,6 +3102,119 @@ def _on_monitoring_path_clicked(sender: int, app_data: Any, user_data: Aggregate
             logging.error(f"Failed to open folder: {exc}")
 
 
+# Experiment script callbacks
+
+def _on_experiment_script_start(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Start the selected experiment script."""
+    controller = user_data
+    if not controller.ui or not controller.ui.experiment_script_combo:
+        return
+    
+    script_name = dpg.get_value(controller.ui.experiment_script_combo)
+    if not script_name:
+        logging.warning("No experiment script selected")
+        return
+    
+    ctx = controller._build_experiment_context()
+    success = controller.script_manager.start_script(script_name, ctx)
+    
+    if success:
+        logging.info(f"Started experiment script: {script_name}")
+    else:
+        logging.error(f"Failed to start experiment script: {script_name}")
+
+
+def _on_experiment_script_stop(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Stop the currently running experiment script."""
+    controller = user_data
+    if controller.script_manager.current_script:
+        ctx = controller._build_experiment_context()
+        controller.script_manager.stop_script(ctx)
+        logging.info("Stopped experiment script")
+    else:
+        logging.warning("No experiment script is running")
+
+
+def _on_experiment_script_pause(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Pause/resume the currently running experiment script."""
+    controller = user_data
+    if not controller.script_manager.current_script:
+        logging.warning("No experiment script is running")
+        return
+    
+    ctx = controller._build_experiment_context()
+    if controller.script_manager.current_script.is_paused:
+        controller.script_manager.resume_script(ctx)
+        logging.info("Resumed experiment script")
+    else:
+        controller.script_manager.pause_script(ctx)
+        logging.info("Paused experiment script")
+
+
+def _on_experiment_script_reload(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Reload available experiment scripts."""
+    controller = user_data
+    controller.script_manager.scan_scripts()
+    
+    # Update combo box items
+    if controller.ui and controller.ui.experiment_script_combo:
+        available = controller.script_manager.get_available_scripts()
+        dpg.configure_item(controller.ui.experiment_script_combo, items=available)
+        if available:
+            dpg.set_value(controller.ui.experiment_script_combo, available[0])
+    
+    logging.info(f"Reloaded experiment scripts: {len(controller.script_manager.available_scripts)} found")
+
+
+def _on_experiment_params_apply(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Apply experiment parameters to the current script."""
+    controller = user_data
+    
+    if not controller.ui:
+        return
+    
+    # Get current script instance
+    if controller.script_manager.current_script:
+        script = controller.script_manager.current_script
+        
+        # Apply parameters if they exist on the script
+        if hasattr(script, 'movement_duration_range') and controller.ui.experiment_move_time_min and controller.ui.experiment_move_time_max:
+            min_time = dpg.get_value(controller.ui.experiment_move_time_min)
+            max_time = dpg.get_value(controller.ui.experiment_move_time_max)
+            script.movement_duration_range = (min_time, max_time)
+            logging.info(f"Set movement duration range: {min_time:.2f}-{max_time:.2f}s")
+        
+        if hasattr(script, 'move_distance_range') and controller.ui.experiment_distance_min and controller.ui.experiment_distance_max:
+            min_dist = dpg.get_value(controller.ui.experiment_distance_min)
+            max_dist = dpg.get_value(controller.ui.experiment_distance_max)
+            script.move_distance_range = (min_dist, max_dist)
+            logging.info(f"Set move distance range: {min_dist:.1f}-{max_dist:.1f}px")
+        
+        if hasattr(script, 'delay_between_actions') and controller.ui.experiment_delay:
+            delay = dpg.get_value(controller.ui.experiment_delay)
+            script.delay_between_actions = delay
+            logging.info(f"Set delay between actions: {delay:.2f}s")
+        
+        if hasattr(script, 'min_separation_distance') and controller.ui.experiment_separation:
+            separation = dpg.get_value(controller.ui.experiment_separation)
+            script.min_separation_distance = separation
+            logging.info(f"Set minimum separation: {separation:.1f}px")
+        
+        if hasattr(script, 'edge_margin') and controller.ui.experiment_edge_margin:
+            margin = dpg.get_value(controller.ui.experiment_edge_margin)
+            script.edge_margin = margin
+            logging.info(f"Set edge margin: {margin:.1f}px")
+        
+        if hasattr(script, 'slm_max_refresh_rate') and controller.ui.experiment_slm_refresh:
+            refresh = dpg.get_value(controller.ui.experiment_slm_refresh)
+            script.slm_max_refresh_rate = refresh
+            logging.info(f"Set SLM max refresh rate: {refresh:.1f}Hz")
+        
+        logging.info("Experiment parameters applied successfully")
+    else:
+        logging.warning("No script running - parameters will be applied when script starts")
+
+
 def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Dict[str, str]) -> AggregateUI:
     """Create DearPyGui UI with responsive layout.
     
@@ -3129,6 +3412,180 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         # Start/Stop button
         monitoring_start_button = dpg.add_button(label="Start Monitor", callback=_on_monitoring_start,
                                                 user_data=controller, width=-1, height=26)
+
+    # Experiment Script Control window
+    experiment_script_window = dpg.generate_uuid()
+    with dpg.window(label="EXPERIMENT SCRIPTS", tag=experiment_script_window, no_close=True):
+        dpg.add_text("EXPERIMENT CONTROL", color=(180, 100, 230, 255))
+        dpg.add_spacing(count=1)
+        
+        # Script selector
+        available_scripts = controller.script_manager.get_available_scripts()
+        experiment_script_combo = dpg.add_combo(
+            label="Script",
+            items=available_scripts if available_scripts else ["No scripts found"],
+            default_value=available_scripts[0] if available_scripts else "No scripts found",
+            width=-1
+        )
+        
+        dpg.add_spacing(count=1)
+        
+        # Script parameters (collapsible section)
+        with dpg.collapsing_header(label="Script Parameters", default_open=False):
+            dpg.add_text("Random Displacement", color=(180, 180, 180, 255))
+            dpg.add_spacing(count=1)
+            
+            # Movement duration range
+            with dpg.group(horizontal=True):
+                dpg.add_text("Move Time (s):", color=TEXT_SECONDARY)
+                experiment_move_time_min = dpg.add_input_float(
+                    label="##move_time_min",
+                    default_value=0.5,
+                    width=75,
+                    min_value=0.1,
+                    max_value=10.0,
+                    min_clamped=True,
+                    step=0.1,
+                    format="%.1f"
+                )
+                dpg.add_text("-", color=TEXT_SECONDARY)
+                experiment_move_time_max = dpg.add_input_float(
+                    label="##move_time_max",
+                    default_value=4.0,
+                    width=75,
+                    min_value=0.1,
+                    max_value=10.0,
+                    min_clamped=True,
+                    step=0.1,
+                    format="%.1f"
+                )
+            
+            # Displacement distance range
+            with dpg.group(horizontal=True):
+                dpg.add_text("Distance (px):", color=TEXT_SECONDARY)
+                experiment_distance_min = dpg.add_input_float(
+                    label="##distance_min",
+                    default_value=20.0,
+                    width=75,
+                    min_value=1.0,
+                    max_value=500.0,
+                    min_clamped=True,
+                    step=1.0,
+                    format="%.1f"
+                )
+                dpg.add_text("-", color=TEXT_SECONDARY)
+                experiment_distance_max = dpg.add_input_float(
+                    label="##distance_max",
+                    default_value=32.0,
+                    width=75,
+                    min_value=1.0,
+                    max_value=500.0,
+                    min_clamped=True,
+                    step=1.0,
+                    format="%.1f"
+                )
+            
+            # Delay between actions
+            experiment_delay = dpg.add_input_float(
+                label="Delay (s)",
+                default_value=4.0,
+                width=120,
+                min_value=0.0,
+                max_value=60.0,
+                min_clamped=True,
+                step=0.5
+            )
+            
+            # Minimum separation
+            experiment_separation = dpg.add_input_float(
+                label="Min Separation (px)",
+                default_value=64.0,
+                width=120,
+                min_value=0.0,
+                max_value=500.0,
+                min_clamped=True,
+                step=1.0
+            )
+            
+            # Edge margin
+            experiment_edge_margin = dpg.add_input_float(
+                label="Edge Margin (px)",
+                default_value=64.0,
+                width=120,
+                min_value=0.0,
+                max_value=500.0,
+                min_clamped=True,
+                step=1.0
+            )
+            
+            # SLM refresh rate
+            experiment_slm_refresh = dpg.add_input_float(
+                label="SLM Refresh (Hz)",
+                default_value=30.0,
+                width=120,
+                min_value=1.0,
+                max_value=240.0,
+                min_clamped=True,
+                step=1.0
+            )
+            
+            dpg.add_spacing(count=1)
+            dpg.add_button(
+                label="Apply Parameters",
+                callback=_on_experiment_params_apply,
+                user_data=controller,
+                width=-1
+            )
+        
+        dpg.add_spacing(count=1)
+        
+        # Control buttons
+        with dpg.group(horizontal=True):
+            experiment_script_start_button = dpg.add_button(
+                label="Start",
+                callback=_on_experiment_script_start,
+                user_data=controller,
+                width=60,
+                height=26
+            )
+            experiment_script_pause_button = dpg.add_button(
+                label="Pause",
+                callback=_on_experiment_script_pause,
+                user_data=controller,
+                width=60,
+                height=26
+            )
+            experiment_script_stop_button = dpg.add_button(
+                label="Stop",
+                callback=_on_experiment_script_stop,
+                user_data=controller,
+                width=60,
+                height=26
+            )
+        
+        dpg.add_spacing(count=1)
+        
+        experiment_script_reload_button = dpg.add_button(
+            label="Reload Scripts",
+            callback=_on_experiment_script_reload,
+            user_data=controller,
+            width=-1,
+            height=26
+        )
+        
+        dpg.add_spacing(count=2)
+        dpg.add_separator()
+        dpg.add_spacing(count=1)
+        
+        # Status display
+        dpg.add_text("STATUS", color=TEXT_SECONDARY)
+        experiment_script_status_text = dpg.add_text("No script running", color=TEXT_PRIMARY)
+        
+        dpg.add_spacing(count=2)
+        
+        # Log display
+        dpg.add_text("LOG", color=TEXT_SECONDARY)
+        experiment_script_info_text = dpg.add_text("", color=TEXT_SECONDARY, wrap=0)
 
     # Image viewer - Full size professional display
     viewer_window = dpg.generate_uuid()
@@ -4063,6 +4520,12 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         tracking_apply_button=tracking_apply_button,
         tracking_reset_button=tracking_reset_button,
         tracking_inputs=tracking_inputs,
+        tracking_config_combo=tracking_config_combo,
+        tracking_config_save_button=tracking_config_save_button,
+        tracking_config_load_button=tracking_config_load_button,
+        tracking_config_set_default_button=tracking_config_set_default_button,
+        tracking_config_reset_button=tracking_config_reset_button,
+        tracking_config_delete_button=tracking_config_delete_button,
         slm_last_command_text=None,
         slm_generation_text=slm_generation_text,
         slm_roundtrip_text=None,
@@ -4097,6 +4560,21 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         monitoring_path_text=monitoring_path_text,
         monitoring_interval_input=monitoring_interval_input,
         monitoring_start_button=monitoring_start_button,
+        experiment_script_combo=experiment_script_combo,
+        experiment_script_start_button=experiment_script_start_button,
+        experiment_script_stop_button=experiment_script_stop_button,
+        experiment_script_pause_button=experiment_script_pause_button,
+        experiment_script_reload_button=experiment_script_reload_button,
+        experiment_script_status_text=experiment_script_status_text,
+        experiment_script_info_text=experiment_script_info_text,
+        experiment_move_time_min=experiment_move_time_min,
+        experiment_move_time_max=experiment_move_time_max,
+        experiment_distance_min=experiment_distance_min,
+        experiment_distance_max=experiment_distance_max,
+        experiment_delay=experiment_delay,
+        experiment_separation=experiment_separation,
+        experiment_edge_margin=experiment_edge_margin,
+        experiment_slm_refresh=experiment_slm_refresh,
     )
 
     # Setup initial window layout - responsive sizing
@@ -4123,15 +4601,19 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
             dpg.configure_item(monitoring_window,
                              pos=(10, int(viewport_height * 0.23) + 45),
                              width=left_col_width,
-                             height=int(viewport_height * 0.12))
+                             height=int(viewport_height * 0.10))
+            dpg.configure_item(experiment_script_window,
+                             pos=(10, int(viewport_height * 0.33) + 55),
+                             width=left_col_width,
+                             height=int(viewport_height * 0.15))
             dpg.configure_item(env_window, 
-                             pos=(10, int(viewport_height * 0.35) + 55), 
+                             pos=(10, int(viewport_height * 0.48) + 65), 
                              width=left_col_width, 
-                             height=int(viewport_height * 0.32))
+                             height=int(viewport_height * 0.25))
             dpg.configure_item(tracking_window, 
-                             pos=(10, int(viewport_height * 0.67) + 65), 
+                             pos=(10, int(viewport_height * 0.73) + 75), 
                              width=left_col_width, 
-                             height=viewport_height - int(viewport_height * 0.67) - 75)
+                             height=viewport_height - int(viewport_height * 0.73) - 85)
             
             # Center column
             dpg.configure_item(viewer_window, 

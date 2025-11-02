@@ -4,8 +4,6 @@ global:
   repo_root: ../
   log_base_dir: ../logs/service_logs
   stop_services_on_exit: true
-  slm_config_dir: ../SLM/slm_config
-  tracking_config_dir: ../Camera/tracking_config
 services:
   arduino_grpc:
     enabled: true
@@ -90,7 +88,7 @@ services:
       fire_and_forget: true
       width: 1920
       height: 1152
-      iterations: 50
+      iterations: 10
   ambient_telemetry:
     enabled: true
     name: Ambient Telemetry Server

@@ -511,11 +511,11 @@ class AppState:
     status_message: str = ""
     display_mode: str = "overlay"
     show_tile_grid: bool = False
-    use_mass_colormap: bool = True
+    use_mass_colormap: bool = False
     mass_cutoff: float = 0.0
     cutoff_below_color: Tuple[int, int, int] = (80, 180, 80)
     cutoff_above_color: Tuple[int, int, int] = (220, 60, 60)
-    circle_size_scale: float = 1.0
+    circle_size_scale: float = 0.5
     auto_save_raw: bool = False
     auto_save_overlay: bool = False
     save_to_hdf5: bool = False
