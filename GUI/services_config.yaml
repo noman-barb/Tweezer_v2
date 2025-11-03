@@ -4,80 +4,6 @@ global:
   repo_root: ../
   log_base_dir: ../logs/service_logs
   stop_services_on_exit: true
-  slm_config_dir: ../SLM/slm_config
-  slm_feature_config_dir: ../SLM/slm_config
-  tracking_config_dir: ../Camera/tracking_config
-  pin_config_path: ../Arduino/pin_config.json
-  experiment_scripts_dir: ../ExperimentScripts
-  monitoring_logs_dir: ../logs/monitoring_logs
-  experiment_logs_dir: ../logs/experiment_logs
-
-dashboard:
-  # Window defaults
-  default_viewport_width: 2560
-  default_viewport_height: 1400
-  
-  # Layout proportions (percentages)
-  layout:
-    left_column_width: 0.16
-    center_column_width: 0.42
-    right_column_width: 0.42
-    right_left_width: 0.45
-    right_right_width: 0.55
-  
-  # Image display defaults
-  image:
-    default_display_scale: 1.0
-    default_texture_size: [1024, 1024]
-    point_selection_radius_px: 18.0
-    default_slm_width: 1920
-    default_slm_height: 1152
-    default_point_intensity: 0.9
-    
-  # SLM display defaults
-  slm:
-    circle_color: [255, 0, 0, 255]  # RGBA
-    circle_radius: 15.0
-    circle_thickness: 2
-    send_debounce_seconds: 0.0333  # 30 FPS
-    
-  # Monitoring defaults
-  monitoring:
-    default_metrics_history: 1000
-    moving_average_window: 50
-    default_interval_seconds: 1.0
-    
-  # UI dimensions
-  dimensions:
-    plot_height: 200
-    hardware_window_height: 900
-    image_metrics_window_height: 600
-    slm_metrics_window_height: 300
-    
-  # Color scheme (RGBA)
-  colors:
-    hardware: [220, 80, 80, 255]
-    image: [80, 200, 90, 255]
-    slm: [230, 180, 60, 255]
-    status_connected: [80, 220, 90, 255]
-    status_disconnected: [220, 60, 60, 255]
-    text_primary: [230, 230, 230, 255]
-    text_secondary: [180, 180, 180, 255]
-  
-  # Affine transform fields
-  affine_fields:
-    - translate_x
-    - translate_y
-    - translate_z
-    - rotate_x_deg
-    - rotate_y_deg
-    - rotate_z_deg
-    - scale_x
-    - scale_y
-    - scale_z
-    - shear_xy
-    - shear_yz
-    - shear_xz
 services:
   arduino_grpc:
     enabled: true
@@ -162,7 +88,7 @@ services:
       fire_and_forget: true
       width: 1920
       height: 1152
-      iterations: 10
+      iterations: 50
   ambient_telemetry:
     enabled: true
     name: Ambient Telemetry Server

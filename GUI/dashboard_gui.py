@@ -3850,30 +3850,67 @@ def _on_zoom_changed(sender: int, app_data: Any, user_data: AggregateControllerS
     controller.image_state.set_zoom(float(app_data))
 
 
-def _on_auto_save_raw_toggled(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
-    """Handle auto save raw toggle."""
+def _on_start_saving_clicked(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle start saving button click."""
     controller = user_data
-    desired = bool(app_data)
+    
+    # Get the image save directory from the input field
+    if controller.ui and controller.ui.raw_dir_display:
+        image_dir = dpg.get_value(controller.ui.raw_dir_display).strip()
+        if not image_dir:
+            logging.error("Image save directory cannot be empty")
+            return
+    else:
+        logging.error("Image directory input not found")
+        return
+    
     try:
-        controller.image_client.update_storage_config({"enabled": desired})
+        # Update storage config to start saving
+        controller.image_client.update_storage_config({
+            "enabled": True,
+            "output_dir": image_dir,
+            "hdf5_enabled": False,  # Disabled as requested
+        })
+        
+        # Update button appearance
+        if controller.ui and controller.ui.auto_save_raw_checkbox:
+            dpg.configure_item(controller.ui.auto_save_raw_checkbox, 
+                             label="⏹ Stop Saving", 
+                             default_value=True)
+        
+        logging.info(f"Started saving images to: {image_dir}")
     except Exception as exc:
-        logging.exception("Failed to update storage config: %s", exc)
+        logging.exception("Failed to start saving: %s", exc)
 
 
-def _on_auto_save_overlay_toggled(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
-    """Handle auto save overlay toggle."""
+def _on_stop_saving_clicked(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle stop saving button click."""
     controller = user_data
-    controller.image_state.set_auto_save_overlay(bool(app_data))
-
-
-def _on_save_hdf5_toggled(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
-    """Handle HDF5 saving toggle."""
-    controller = user_data
-    desired = bool(app_data)
+    
     try:
-        controller.image_client.update_storage_config({"hdf5_enabled": desired})
+        # Update storage config to stop saving
+        controller.image_client.update_storage_config({"enabled": False})
+        
+        # Update button appearance
+        if controller.ui and controller.ui.auto_save_raw_checkbox:
+            dpg.configure_item(controller.ui.auto_save_raw_checkbox, 
+                             label="▶ Start Saving", 
+                             default_value=False)
+        
+        logging.info("Stopped saving images")
     except Exception as exc:
-        logging.exception("Failed to update HDF5 config: %s", exc)
+        logging.exception("Failed to stop saving: %s", exc)
+
+
+def _on_saving_toggled(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle saving toggle."""
+    controller = user_data
+    is_saving = bool(app_data)
+    
+    if is_saving:
+        _on_start_saving_clicked(sender, app_data, controller)
+    else:
+        _on_stop_saving_clicked(sender, app_data, controller)
 
 
 def _on_storage_fps_changed(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
@@ -4544,12 +4581,44 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
     # Image Saving & Capture window
     image_saving_window = dpg.generate_uuid()
     with dpg.window(label="IMAGE SAVING & CAPTURE", tag=image_saving_window, no_close=True):
+        dpg.add_text("SAVE CONTROL", color=IMAGE_COLOR)
+        dpg.add_spacing(count=1)
+        
+        # Start/Stop saving toggle button
         auto_save_raw_checkbox = dpg.add_checkbox(
-            label="Server File Saving",
-            default_value=controller.image_state.auto_save_raw,
-            callback=_on_auto_save_raw_toggled,
+            label="▶ Start Saving",
+            default_value=False,  # Default: NOT saving
+            callback=_on_saving_toggled,
             user_data=controller,
         )
+        
+        dpg.add_spacing(count=2)
+        dpg.add_separator()
+        dpg.add_spacing(count=2)
+        
+        dpg.add_text("SAVE LOCATIONS", color=IMAGE_COLOR)
+        dpg.add_spacing(count=1)
+        
+        # Editable image save directory
+        raw_dir_display = dpg.add_input_text(
+            label="Image Save Folder",
+            default_value=str(controller.image_state.raw_save_dir),
+            width=300,
+            hint="Path where images will be saved",
+        )
+        
+        # Note: Log file location would be configured separately at server startup
+        # or via services_config.yaml - not dynamically changeable during runtime
+        dpg.add_text("Note: Log file location is set in services_config.yaml", 
+                    color=TEXT_SECONDARY, wrap=300)
+        
+        dpg.add_spacing(count=2)
+        dpg.add_separator()
+        dpg.add_spacing(count=2)
+        
+        dpg.add_text("SAVE PARAMETERS", color=IMAGE_COLOR)
+        dpg.add_spacing(count=1)
+        
         storage_target_fps_input = dpg.add_input_float(
             label="Target FPS",
             default_value=controller.image_state.storage_target_fps,
@@ -4560,40 +4629,10 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
             callback=_on_storage_fps_changed,
             user_data=controller,
         )
+        
         storage_format_text = dpg.add_text(
-            f"Storage format: {controller.image_state.storage_image_format} (TIFF + HDF5)",
+            f"Storage format: {controller.image_state.storage_image_format} (TIFF)",
             color=TEXT_SECONDARY,
-        )
-        save_hdf5_checkbox = dpg.add_checkbox(
-            label="Server HDF5 Recording",
-            default_value=controller.image_state.save_to_hdf5,
-            callback=_on_save_hdf5_toggled,
-            user_data=controller,
-        )
-        
-        dpg.add_spacing(count=1)
-        raw_dir_display = dpg.add_input_text(
-            label="Raw Folder",
-            default_value=str(controller.image_state.raw_save_dir),
-            readonly=True,
-        )
-        hdf5_path_display = dpg.add_input_text(
-            label="HDF5 File",
-            default_value=str(controller.image_state.hdf5_path) if controller.image_state.hdf5_path else "(auto)",
-            readonly=True,
-        )
-        overlay_dir_display = dpg.add_input_text(
-            label="Overlay Folder",
-            default_value=str(controller.image_state.overlay_save_dir),
-            readonly=True,
-        )
-        
-        dpg.add_spacing(count=2)
-        save_overlay_button = dpg.add_button(
-            label="Save Current Overlay",
-            callback=_on_save_overlay_clicked,
-            user_data=controller,
-            width=-1,
         )
         
         dpg.add_spacing(count=2)
@@ -4606,6 +4645,11 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         storage_bytes_text = dpg.add_text("Bytes: --", color=TEXT_PRIMARY)
         storage_throttle_text = dpg.add_text("Throttle: -- ms", color=TEXT_PRIMARY)
         storage_message_text = dpg.add_text("Save Message: (none)", color=TEXT_SECONDARY, wrap=340)
+    
+    # Remove these from UI structure (keep for compatibility but hide)
+    hdf5_path_display = None
+    overlay_dir_display = None
+    save_overlay_button = None
 
     # Environment & Control
     env_window = dpg.generate_uuid()
@@ -5362,13 +5406,13 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         above_color_picker=above_color_picker,
         circle_scale_slider=circle_scale_slider,
         auto_save_raw_checkbox=auto_save_raw_checkbox,
-        auto_save_overlay_checkbox=None,  # Not implemented yet
-        save_hdf5_checkbox=save_hdf5_checkbox,
+        auto_save_overlay_checkbox=None,  # Removed from UI
+        save_hdf5_checkbox=None,  # Removed from UI
         storage_target_fps_input=storage_target_fps_input,
-        save_overlay_button=save_overlay_button,
+        save_overlay_button=None,  # Removed from UI
         raw_dir_display=raw_dir_display,
-        overlay_dir_display=overlay_dir_display,
-        hdf5_path_display=hdf5_path_display,
+        overlay_dir_display=None,  # Removed from UI
+        hdf5_path_display=None,  # Removed from UI
         storage_format_text=storage_format_text,
         save_text=save_text,
         storage_ratio_text=storage_ratio_text,
