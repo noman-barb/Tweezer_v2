@@ -444,6 +444,7 @@ class AggregateUI:
     storage_target_fps_input: Optional[int] = None
     save_overlay_button: Optional[int] = None
     raw_dir_display: Optional[int] = None
+    log_dir_display: Optional[int] = None
     overlay_dir_display: Optional[int] = None
     hdf5_path_display: Optional[int] = None
     storage_format_text: Optional[int] = None
@@ -3864,11 +3865,34 @@ def _on_start_saving_clicked(sender: int, app_data: Any, user_data: AggregateCon
         logging.error("Image directory input not found")
         return
     
+    # Get the log directory
+    log_dir = None
+    log_path = None
+    if controller.ui and controller.ui.log_dir_display:
+        log_dir = dpg.get_value(controller.ui.log_dir_display).strip()
+    
     try:
+        # Create directories if they don't exist
+        image_path = Path(image_dir)
+        image_path.mkdir(parents=True, exist_ok=True)
+        
+        if log_dir:
+            log_path = Path(log_dir)
+            log_path.mkdir(parents=True, exist_ok=True)
+            
+            # Configure logging to save to the log directory
+            log_file = log_path / f"dashboard_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setFormatter(logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            ))
+            logging.getLogger().addHandler(file_handler)
+            logging.info(f"Logging to: {log_file}")
+        
         # Update storage config to start saving
         controller.image_client.update_storage_config({
             "enabled": True,
-            "output_dir": image_dir,
+            "output_dir": str(image_path),
             "hdf5_enabled": False,  # Disabled as requested
         })
         
@@ -3878,7 +3902,9 @@ def _on_start_saving_clicked(sender: int, app_data: Any, user_data: AggregateCon
                              label="⏹ Stop Saving", 
                              default_value=True)
         
-        logging.info(f"Started saving images to: {image_dir}")
+        logging.info(f"Started saving images to: {image_path}")
+        if log_dir and log_path:
+            logging.info(f"Logs saving to: {log_path}")
     except Exception as exc:
         logging.exception("Failed to start saving: %s", exc)
 
@@ -3911,6 +3937,43 @@ def _on_saving_toggled(sender: int, app_data: Any, user_data: AggregateControlle
         _on_start_saving_clicked(sender, app_data, controller)
     else:
         _on_stop_saving_clicked(sender, app_data, controller)
+
+
+def _on_browse_session_folder_clicked(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle browse session folder button click."""
+    controller = user_data
+    
+    def folder_dialog_callback(sender: int, app_data: Any) -> None:
+        """Callback when folder is selected."""
+        selections = app_data.get("selections", {})
+        if selections and controller.ui:
+            # Get the selected folder path
+            base_folder = Path(list(selections.values())[0])
+            
+            # Create subdirectories: images and logs
+            images_folder = base_folder / "images"
+            logs_folder = base_folder / "logs"
+            
+            # Update the UI fields
+            if controller.ui.raw_dir_display:
+                dpg.set_value(controller.ui.raw_dir_display, str(images_folder))
+            if controller.ui.log_dir_display:
+                dpg.set_value(controller.ui.log_dir_display, str(logs_folder))
+            
+            logging.info(f"Selected session folder: {base_folder}")
+            logging.info(f"  Images will save to: {images_folder}")
+            logging.info(f"  Logs will save to: {logs_folder}")
+    
+    # Create file dialog for folder selection
+    with dpg.file_dialog(
+        label="Select Session Folder (images/ and logs/ will be created inside)",
+        callback=folder_dialog_callback,
+        width=700,
+        height=400,
+        directory_selector=True,
+        modal=True,
+    ):
+        dpg.add_file_extension(".*")
 
 
 def _on_storage_fps_changed(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
@@ -4599,17 +4662,35 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         dpg.add_text("SAVE LOCATIONS", color=IMAGE_COLOR)
         dpg.add_spacing(count=1)
         
-        # Editable image save directory
+        # Session folder selector (creates images/ and logs/ subdirectories)
+        dpg.add_button(
+            label="📁 Select Session Folder",
+            callback=_on_browse_session_folder_clicked,
+            user_data=controller,
+            width=-1,
+        )
+        dpg.add_text("(Will create 'images' and 'logs' subdirectories)", 
+                    color=TEXT_SECONDARY, wrap=300)
+        
+        dpg.add_spacing(count=1)
+        
+        # Image save directory
         raw_dir_display = dpg.add_input_text(
-            label="Image Save Folder",
+            label="Images Folder",
             default_value=str(controller.image_state.raw_save_dir),
             width=300,
             hint="Path where images will be saved",
         )
         
-        # Note: Log file location would be configured separately at server startup
-        # or via services_config.yaml - not dynamically changeable during runtime
-        dpg.add_text("Note: Log file location is set in services_config.yaml", 
+        # Log save directory
+        log_dir_display = dpg.add_input_text(
+            label="Logs Folder",
+            default_value=str(Path.cwd() / "logs"),
+            width=300,
+            hint="Path where log files will be saved",
+        )
+        
+        dpg.add_text("💡 Tip: Use 'Select Session Folder' to set both automatically", 
                     color=TEXT_SECONDARY, wrap=300)
         
         dpg.add_spacing(count=2)
@@ -5411,6 +5492,7 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         storage_target_fps_input=storage_target_fps_input,
         save_overlay_button=None,  # Removed from UI
         raw_dir_display=raw_dir_display,
+        log_dir_display=log_dir_display,
         overlay_dir_display=None,  # Removed from UI
         hdf5_path_display=None,  # Removed from UI
         storage_format_text=storage_format_text,

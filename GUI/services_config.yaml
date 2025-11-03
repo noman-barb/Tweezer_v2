@@ -63,15 +63,15 @@ services:
     restart_delay: 5
     log_subdir: imaging/save_compressed
     args:
-      input: /path/to/input/directory
-      output: /path/to/output/directory
+      input: /mnt/ramdisk/exp1/exp1/images
+      output: /data2_noraid/data/Noman/exp1
       processes: 16
-      max_images: null
+      max_images: '999999999'
       stability_seconds: 1.0
       quality: 100
       effort: 7
       decoding_speed: 0
-      verbose: false
+      verbose: true
       cpu_affinity: 38-53
   slm_generator:
     enabled: true
