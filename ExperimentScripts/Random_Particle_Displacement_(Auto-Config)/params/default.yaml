@@ -1,0 +1,31 @@
+script_name: Random Particle Displacement (Auto-Config)
+description: Default parameters for typical particle displacement experiments
+created_at: '2025-11-03T12:00:00.000000+00:00'
+updated_at: '2025-11-03T12:00:00.000000+00:00'
+params:
+  # Movement parameters
+  movement_duration_min: 0.5
+  movement_duration_max: 4.0
+  move_distance_min: 20.0
+  move_distance_max: 32.0
+  
+  # Timing parameters
+  delay_between_actions: 4.0
+  
+  # Spatial constraints
+  min_separation_distance: 64.0
+  edge_margin: 64.0
+  
+  # SLM parameters
+  slm_max_refresh_rate: 30.0
+  trap_intensity: 0.9
+  trap_z_offset: 0.0
+  
+  # Performance parameters
+  assumed_fps: 30.0
+  target_reached_threshold: 5.0
+  step_close_enough_threshold: 0.5
+  
+  # Logging parameters
+  log_progress_interval: 10
+  log_status_interval: 30

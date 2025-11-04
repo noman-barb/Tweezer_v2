@@ -89,6 +89,7 @@ from tracking_config.tracking_config_manager import TrackingConfigManager, Track
 # Experiment Scripts imports
 from base_script import ExperimentScript, ExperimentContext  # type: ignore  # noqa: E402
 from script_manager import ScriptManager  # type: ignore  # noqa: E402
+from experiment_params_manager import ExperimentParamsManager  # type: ignore  # noqa: E402
 
 
 # Configuration Management
@@ -519,6 +520,12 @@ class AggregateUI:
     """Container for dynamically generated parameter controls"""
     experiment_param_widgets: Dict[str, int] = field(default_factory=dict)
     """Maps parameter names to their widget IDs"""
+    # Experiment parameters configuration management
+    experiment_params_combo: Optional[int] = None
+    experiment_params_save_button: Optional[int] = None
+    experiment_params_load_button: Optional[int] = None
+    experiment_params_set_default_button: Optional[int] = None
+    experiment_params_delete_button: Optional[int] = None
     # Dashboard UI configuration management
     ui_config_combo: Optional[int] = None
     ui_config_save_button: Optional[int] = None
@@ -1134,6 +1141,9 @@ class AggregateControllerStreaming:
         scripts_dir = Path(__file__).parent.parent / "ExperimentScripts"
         self.script_manager = ScriptManager(scripts_dir)
         self.experiment_log_messages: deque[str] = deque(maxlen=100)
+        
+        # Experiment params manager
+        self.experiment_params_manager = ExperimentParamsManager(scripts_dir)
 
     def set_ui(self, ui: AggregateUI) -> None:
         self.ui = ui
@@ -1639,6 +1649,106 @@ class AggregateControllerStreaming:
                         dpg.set_value(input_id, value)
         except Exception as exc:
             logging.error("Failed to update tracking parameters UI: %s", exc)
+    
+    # Experiment Parameters Configuration Management
+    
+    def save_experiment_params(self, script_name: str, config_name: str, description: str = "") -> bool:
+        """Save current experiment parameters for a script."""
+        try:
+            # Get current parameter values from the active script
+            if self.script_manager.current_script:
+                if self.script_manager.current_script.name == script_name:
+                    params = self.script_manager.current_script.get_all_param_values()
+                else:
+                    # Script name doesn't match - get from UI widgets
+                    params = self._get_current_experiment_params()
+            else:
+                # No active script - get from UI widgets
+                params = self._get_current_experiment_params()
+            
+            success = self.experiment_params_manager.save_config(
+                script_name=script_name,
+                config_name=config_name,
+                params=params,
+                description=description
+            )
+            
+            if success:
+                logging.info(f"Saved experiment params '{config_name}' for script '{script_name}'")
+            else:
+                logging.warning(f"Failed to save experiment params '{config_name}' for script '{script_name}'")
+            
+            return success
+        except Exception as exc:
+            logging.error(f"Failed to save experiment params '{config_name}' for script '{script_name}': {exc}")
+            return False
+    
+    def load_experiment_params(self, script_name: str, config_name: str) -> bool:
+        """Load experiment parameters for a script."""
+        try:
+            config = self.experiment_params_manager.load_config(script_name, config_name)
+            if not config:
+                logging.warning(f"Experiment params config '{config_name}' not found for script '{script_name}'")
+                return False
+            
+            # Apply parameters to UI widgets
+            self._apply_experiment_params(config.params)
+            
+            # If script is currently loaded, also apply to script
+            if self.script_manager.current_script:
+                if self.script_manager.current_script.name == script_name:
+                    self.script_manager.current_script.set_params_from_dict(config.params)
+            
+            logging.info(f"Loaded experiment params '{config_name}' for script '{script_name}'")
+            return True
+        except Exception as exc:
+            logging.error(f"Failed to load experiment params '{config_name}' for script '{script_name}': {exc}")
+            return False
+    
+    def set_default_experiment_params(self, script_name: str, config_name: str) -> bool:
+        """Set default experiment parameters configuration for a script."""
+        try:
+            success = self.experiment_params_manager.set_default_config(script_name, config_name)
+            if success:
+                logging.info(f"Set default experiment params to '{config_name}' for script '{script_name}'")
+            else:
+                logging.warning(f"Failed to set default experiment params for script '{script_name}'")
+            return success
+        except Exception as exc:
+            logging.error(f"Failed to set default experiment params for script '{script_name}': {exc}")
+            return False
+    
+    def delete_experiment_params(self, script_name: str, config_name: str) -> bool:
+        """Delete an experiment parameters configuration."""
+        try:
+            success = self.experiment_params_manager.delete_config(script_name, config_name)
+            if success:
+                logging.info(f"Deleted experiment params '{config_name}' for script '{script_name}'")
+            else:
+                logging.warning(f"Failed to delete experiment params '{config_name}' for script '{script_name}'")
+            return success
+        except Exception as exc:
+            logging.error(f"Failed to delete experiment params '{config_name}' for script '{script_name}': {exc}")
+            return False
+    
+    def list_experiment_params(self, script_name: str) -> List[str]:
+        """Get list of saved experiment parameter configurations for a script."""
+        return self.experiment_params_manager.list_configs(script_name)
+    
+    def get_default_experiment_params(self, script_name: str) -> Optional[str]:
+        """Get name of default experiment parameters configuration for a script."""
+        return self.experiment_params_manager.get_default_config(script_name)
+    
+    def load_default_experiment_params(self, script_name: str) -> bool:
+        """Load default experiment parameters for a script."""
+        try:
+            default_name = self.get_default_experiment_params(script_name)
+            if default_name:
+                return self.load_experiment_params(script_name, default_name)
+            return False
+        except Exception as exc:
+            logging.error(f"Failed to load default experiment params for script '{script_name}': {exc}")
+            return False
     
     # Dashboard UI Configuration Management
     
@@ -4080,6 +4190,21 @@ def _on_experiment_script_selected(sender: int, app_data: Any, user_data: Aggreg
     if not script_name or script_name == "No scripts found":
         return
     
+    # Update parameters configuration combo box for this script
+    if controller.ui.experiment_params_combo:
+        configs = controller.list_experiment_params(script_name)
+        dpg.configure_item(controller.ui.experiment_params_combo, 
+                          items=configs if configs else ["No saved configs"])
+        if configs:
+            # Try to load default config if available
+            default_config = controller.get_default_experiment_params(script_name)
+            if default_config and default_config in configs:
+                dpg.set_value(controller.ui.experiment_params_combo, default_config)
+            else:
+                dpg.set_value(controller.ui.experiment_params_combo, configs[0])
+        else:
+            dpg.set_value(controller.ui.experiment_params_combo, "No saved configs")
+    
     # Get script class and create temporary instance for introspection
     try:
         if script_name in controller.script_manager.available_scripts:
@@ -4090,7 +4215,14 @@ def _on_experiment_script_selected(sender: int, app_data: Any, user_data: Aggreg
             # Check if script supports auto-config
             if hasattr(temp_script, 'get_param_specs'):
                 controller._populate_experiment_params_ui(temp_script)
-                logging.info(f"Loaded parameters for script: {script_name}")
+                
+                # Try to load default params if available
+                default_config = controller.get_default_experiment_params(script_name)
+                if default_config:
+                    controller.load_experiment_params(script_name, default_config)
+                    logging.info(f"Loaded default parameters for script: {script_name}")
+                else:
+                    logging.info(f"Loaded parameters for script: {script_name}")
             else:
                 # Script doesn't support auto-config, clear parameters UI
                 if controller.ui.experiment_params_container and dpg.does_item_exist(controller.ui.experiment_params_container):
@@ -4211,6 +4343,139 @@ def _on_experiment_params_apply(sender: int, app_data: Any, user_data: Aggregate
         logging.info(f"Applied {params_applied} parameters to running script")
     else:
         logging.warning("No script running - parameters will be applied when script starts")
+
+
+# Experiment Parameters Configuration Callbacks
+
+def _on_experiment_params_save(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Show dialog to save current experiment parameters."""
+    controller = user_data
+    if not controller.ui or not controller.ui.experiment_script_combo:
+        return
+    
+    script_name = dpg.get_value(controller.ui.experiment_script_combo)
+    if not script_name or script_name == "No scripts found":
+        logging.warning("No script selected to save parameters")
+        return
+    
+    # Create modal for name/description input
+    with dpg.window(label="Save Experiment Parameters", modal=True, tag="save_exp_params_modal", 
+                   width=400, height=200, pos=(400, 300)):
+        dpg.add_text("Enter configuration name:")
+        config_name_input = dpg.add_input_text(tag="exp_params_config_name_input", width=-1)
+        dpg.add_spacing(count=2)
+        dpg.add_text("Description (optional):")
+        desc_input = dpg.add_input_text(tag="exp_params_config_desc_input", width=-1, multiline=True, height=60)
+        dpg.add_spacing(count=2)
+        
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Save", width=150, 
+                         callback=_confirm_experiment_params_save,
+                         user_data=(controller, script_name))
+            dpg.add_button(label="Cancel", width=150,
+                         callback=lambda: dpg.delete_item("save_exp_params_modal"))
+
+
+def _confirm_experiment_params_save(sender: int, app_data: Any, user_data: Tuple[AggregateControllerStreaming, str]) -> None:
+    """Confirm and save experiment parameters configuration."""
+    controller, script_name = user_data
+    
+    config_name = dpg.get_value("exp_params_config_name_input").strip()
+    description = dpg.get_value("exp_params_config_desc_input").strip()
+    
+    if not config_name:
+        logging.warning("Configuration name cannot be empty")
+        return
+    
+    success = controller.save_experiment_params(script_name, config_name, description)
+    if success:
+        logging.info(f"Saved experiment parameters '{config_name}' for script '{script_name}'")
+        
+        # Update combo box if it exists
+        if controller.ui and controller.ui.experiment_params_combo:
+            configs = controller.list_experiment_params(script_name)
+            dpg.configure_item(controller.ui.experiment_params_combo, items=configs if configs else ["No saved configs"])
+            if configs:
+                dpg.set_value(controller.ui.experiment_params_combo, config_name)
+    
+    dpg.delete_item("save_exp_params_modal")
+
+
+def _on_experiment_params_load(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Load selected experiment parameters configuration."""
+    controller = user_data
+    if not controller.ui or not controller.ui.experiment_params_combo or not controller.ui.experiment_script_combo:
+        return
+    
+    script_name = dpg.get_value(controller.ui.experiment_script_combo)
+    config_name = dpg.get_value(controller.ui.experiment_params_combo)
+    
+    if config_name and config_name != "No saved configs":
+        controller.load_experiment_params(script_name, config_name)
+
+
+def _on_experiment_params_set_default(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Set selected configuration as default."""
+    controller = user_data
+    if not controller.ui or not controller.ui.experiment_params_combo or not controller.ui.experiment_script_combo:
+        return
+    
+    script_name = dpg.get_value(controller.ui.experiment_script_combo)
+    config_name = dpg.get_value(controller.ui.experiment_params_combo)
+    
+    if config_name and config_name != "No saved configs":
+        success = controller.set_default_experiment_params(script_name, config_name)
+        if success:
+            logging.info(f"Set '{config_name}' as default for script '{script_name}'")
+
+
+def _on_experiment_params_delete(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Show confirmation dialog to delete experiment parameters configuration."""
+    controller = user_data
+    if not controller.ui or not controller.ui.experiment_params_combo or not controller.ui.experiment_script_combo:
+        return
+    
+    script_name = dpg.get_value(controller.ui.experiment_script_combo)
+    config_name = dpg.get_value(controller.ui.experiment_params_combo)
+    
+    if not config_name or config_name == "No saved configs":
+        return
+    
+    # Confirmation dialog
+    with dpg.window(label="Delete Configuration", modal=True, tag="delete_exp_params_modal",
+                   width=350, height=120, pos=(450, 350)):
+        dpg.add_text(f"Delete experiment parameters '{config_name}'?")
+        dpg.add_text("This cannot be undone.", color=(220, 80, 80, 255))
+        dpg.add_spacing(count=2)
+        
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Delete", width=140,
+                         callback=_confirm_experiment_params_delete,
+                         user_data=(controller, script_name, config_name))
+            dpg.add_button(label="Cancel", width=140,
+                         callback=lambda: dpg.delete_item("delete_exp_params_modal"))
+
+
+def _confirm_experiment_params_delete(sender: int, app_data: Any, user_data: Tuple[AggregateControllerStreaming, str, str]) -> None:
+    """Confirm and delete experiment parameters configuration."""
+    controller, script_name, config_name = user_data
+    
+    success = controller.delete_experiment_params(script_name, config_name)
+    if success:
+        # Update combo box
+        if controller.ui and controller.ui.experiment_params_combo:
+            configs = controller.list_experiment_params(script_name)
+            dpg.configure_item(controller.ui.experiment_params_combo, items=configs if configs else ["No saved configs"])
+            if configs:
+                dpg.set_value(controller.ui.experiment_params_combo, configs[0])
+    
+    dpg.delete_item("delete_exp_params_modal")
+
+
+def _on_experiment_params_combo_changed(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Update UI when experiment params combo selection changes."""
+    # This is called when the combo selection changes - could add indicator for default config
+    pass
 
 
 def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Dict[str, str]) -> AggregateUI:
@@ -4487,6 +4752,55 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
             callback=_on_experiment_script_selected,
             user_data=controller
         )
+        
+        dpg.add_spacing(count=1)
+        
+        # Parameters configuration management
+        with dpg.collapsing_header(label="Parameters Config", default_open=False):
+            dpg.add_text("Saved Configurations:", color=(180, 180, 180, 255))
+            
+            # Get initial script name if available
+            initial_script = available_scripts[0] if available_scripts and available_scripts[0] != "No scripts found" else ""
+            initial_configs = controller.list_experiment_params(initial_script) if initial_script else []
+            
+            experiment_params_combo = dpg.add_combo(
+                label="##params_config",
+                items=initial_configs if initial_configs else ["No saved configs"],
+                default_value=initial_configs[0] if initial_configs else "No saved configs",
+                width=-1,
+                callback=_on_experiment_params_combo_changed,
+                user_data=controller
+            )
+            
+            dpg.add_spacing(count=1)
+            
+            with dpg.group(horizontal=True):
+                experiment_params_save_button = dpg.add_button(
+                    label="Save",
+                    callback=_on_experiment_params_save,
+                    user_data=controller,
+                    width=60
+                )
+                experiment_params_load_button = dpg.add_button(
+                    label="Load",
+                    callback=_on_experiment_params_load,
+                    user_data=controller,
+                    width=60
+                )
+            
+            with dpg.group(horizontal=True):
+                experiment_params_set_default_button = dpg.add_button(
+                    label="Set Default",
+                    callback=_on_experiment_params_set_default,
+                    user_data=controller,
+                    width=80
+                )
+                experiment_params_delete_button = dpg.add_button(
+                    label="Delete",
+                    callback=_on_experiment_params_delete,
+                    user_data=controller,
+                    width=60
+                )
         
         dpg.add_spacing(count=1)
         
@@ -5554,6 +5868,11 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         experiment_script_status_text=experiment_script_status_text,
         experiment_script_info_text=experiment_script_info_text,
         experiment_params_container=experiment_params_container,
+        experiment_params_combo=experiment_params_combo,
+        experiment_params_save_button=experiment_params_save_button,
+        experiment_params_load_button=experiment_params_load_button,
+        experiment_params_set_default_button=experiment_params_set_default_button,
+        experiment_params_delete_button=experiment_params_delete_button,
         ui_config_combo=ui_config_combo,
         ui_config_save_button=ui_config_save_button,
         ui_config_load_button=ui_config_load_button,

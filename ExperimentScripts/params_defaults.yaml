@@ -1,0 +1,4 @@
+# Default parameter configurations for each experiment script
+# Maps script names to their default configuration names
+defaults:
+  'Random Particle Displacement (Auto-Config)': default
