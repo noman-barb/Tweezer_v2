@@ -56,11 +56,14 @@ class PIController:
         ki_heating: Optional[float] = None,
         kp_cooling: Optional[float] = None,
         ki_cooling: Optional[float] = None,
-        deadband: float = 0.1,
+    deadband: float = 0.1,
+    deadband_heating: Optional[float] = None,
+    deadband_cooling: Optional[float] = None,
         pwm_min: float = 0.0,
         pwm_max: float = 0.4,
         mode_switch_delay: float = 10.0,
         heating_pwm_cap: Optional[float] = None,
+        near_setpoint_threshold: float = 1.0,  # New parameter for two-tier control
     ):
         """Initialize PI controller.
         
@@ -80,7 +83,19 @@ class PIController:
         self.ki_heating = float(ki_heating) if ki_heating is not None else float(ki)
         self.kp_cooling = float(kp_cooling) if kp_cooling is not None else float(kp)
         self.ki_cooling = float(ki_cooling) if ki_cooling is not None else float(ki)
-        self.deadband = deadband
+        base_deadband = max(0.0, float(deadband))
+        self.deadband = base_deadband
+        self.deadband_heating = (
+            max(0.0, float(deadband_heating))
+            if deadband_heating is not None
+            else base_deadband
+        )
+        self.deadband_cooling = (
+            max(0.0, float(deadband_cooling))
+            if deadband_cooling is not None
+            else base_deadband
+        )
+        self.deadband = max(self.deadband_heating, self.deadband_cooling)
         self.pwm_min = pwm_min
         self.pwm_max = pwm_max
         self.mode_switch_delay = mode_switch_delay
@@ -89,12 +104,19 @@ class PIController:
             float(heating_pwm_cap) if heating_pwm_cap is not None else pwm_max * 0.5
         )
         
+        # Two-tier control threshold
+        self.near_setpoint_threshold = max(0.1, float(near_setpoint_threshold))
+        
         self.integral = 0.0
         self.last_error = 0.0
         self.last_time: Optional[float] = None
         
         self.current_mode: Optional[str] = None  # "HEATING" or "COOLING"
         self.last_mode_switch_time: Optional[float] = None
+        
+        # Temperature history for trend detection (used in near-setpoint control)
+        self.temp_history: deque = deque(maxlen=10)  # Keep last 10 temperature readings
+        self.temp_time_history: deque = deque(maxlen=10)  # Corresponding timestamps
         
         self._lock = threading.Lock()
     
@@ -176,13 +198,44 @@ class PIController:
     def set_deadband(self, deadband: float) -> None:
         """Update deadband."""
         with self._lock:
-            self.deadband = deadband
-            logger.info("Deadband updated to %.2f°C", deadband)
+            value = max(0.0, float(deadband))
+            self.deadband = value
+            self.deadband_heating = value
+            self.deadband_cooling = value
+            logger.info("Deadband updated to %.2f°C (symmetric)", value)
     
     def get_deadband(self) -> float:
         """Get current deadband."""
         with self._lock:
             return self.deadband
+
+    def set_deadband_heating(self, deadband: float) -> None:
+        with self._lock:
+            self.deadband_heating = max(0.0, float(deadband))
+            self.deadband = max(self.deadband_heating, self.deadband_cooling)
+            logger.info(
+                "Heating-side deadband updated to %.2f°C (cooling=%.2f°C)",
+                self.deadband_heating,
+                self.deadband_cooling,
+            )
+
+    def get_deadband_heating(self) -> float:
+        with self._lock:
+            return self.deadband_heating
+
+    def set_deadband_cooling(self, deadband: float) -> None:
+        with self._lock:
+            self.deadband_cooling = max(0.0, float(deadband))
+            self.deadband = max(self.deadband_heating, self.deadband_cooling)
+            logger.info(
+                "Cooling-side deadband updated to %.2f°C (heating=%.2f°C)",
+                self.deadband_cooling,
+                self.deadband_heating,
+            )
+
+    def get_deadband_cooling(self) -> float:
+        with self._lock:
+            return self.deadband_cooling
 
     def set_mode_switch_delay(self, delay: float) -> None:
         """Update minimum seconds between heating/cooling mode switches."""
@@ -213,10 +266,26 @@ class PIController:
     def get_pwm_min(self) -> float:
         with self._lock:
             return self.pwm_min
+
+    def set_near_setpoint_threshold(self, threshold: float) -> None:
+        """Set the threshold for near-setpoint control mode."""
+        with self._lock:
+            self.near_setpoint_threshold = max(0.1, float(threshold))
+            logger.info("Near-setpoint threshold updated to %.2f°C", self.near_setpoint_threshold)
+
+    def get_near_setpoint_threshold(self) -> float:
+        """Get current near-setpoint threshold."""
+        with self._lock:
+            return self.near_setpoint_threshold
     
     def reset(self) -> None:
         """Reset controller state."""
         with self._lock:
+            self.integral = 0.0
+            self.last_error = 0.0
+            self.last_time = None
+            self.temp_history.clear()
+            self.temp_time_history.clear()
             self.integral = 0.0
             self.last_error = 0.0
             self.last_time = None
@@ -227,13 +296,43 @@ class PIController:
             return self.heating_pwm_cap
         return self.pwm_max
 
+    def _calculate_temp_trend(self) -> Optional[float]:
+        """Calculate temperature trend (°C/s) from recent history.
+        
+        Returns:
+            Temperature rate of change in °C/s, or None if insufficient data
+        """
+        if len(self.temp_history) < 3:
+            return None
+        
+        # Use linear regression for more robust trend estimation
+        temps = list(self.temp_history)
+        times = list(self.temp_time_history)
+        
+        n = len(temps)
+        sum_t = sum(times)
+        sum_temp = sum(temps)
+        sum_t_temp = sum(t * temp for t, temp in zip(times, temps))
+        sum_t_sq = sum(t * t for t in times)
+        
+        denominator = n * sum_t_sq - sum_t * sum_t
+        if abs(denominator) < 1e-9:
+            return None
+        
+        # Slope of linear fit (°C/s)
+        slope = (n * sum_t_temp - sum_t * sum_temp) / denominator
+        return slope
+
     def compute(
         self,
         current_temp: float,
         baseline_pwm: float = 0.0,
         baseline_mode: Optional[str] = None,
     ) -> Tuple[float, str]:
-        """Compute PWM output and heating/cooling mode.
+        """Compute PWM output and heating/cooling mode with two-tier control strategy.
+        
+        Uses aggressive control when far from setpoint (>1°C) and gentle trend-aware
+        control when near setpoint (≤1°C) to prevent oscillations.
         
         Args:
             current_temp: Current objective temperature in °C
@@ -245,6 +344,11 @@ class PIController:
         """
         with self._lock:
             current_time = time.time()
+            
+            # Update temperature history for trend detection
+            self.temp_history.append(current_temp)
+            self.temp_time_history.append(current_time)
+            
             baseline_pwm = max(self.pwm_min, min(float(baseline_pwm), self.pwm_max))
             if baseline_pwm <= self.pwm_min + 1e-9:
                 baseline_pwm = 0.0
@@ -254,7 +358,30 @@ class PIController:
             # Calculate error
             error = self.setpoint - current_temp
             abs_error = abs(error)
-            within_deadband = abs_error <= self.deadband
+            active_deadband = self.deadband_heating if error >= 0 else self.deadband_cooling
+            within_deadband = abs_error <= active_deadband
+
+            # Determine if we're near the setpoint (two-tier control)
+            near_setpoint = abs_error <= self.near_setpoint_threshold
+            
+            # Calculate temperature trend
+            temp_trend = self._calculate_temp_trend()  # °C/s
+
+            if baseline_mode == "HEATING" and error < -self.deadband_cooling:
+                logger.debug(
+                    "Discarding heating feed-forward (err=%.3f°C requires cooling)",
+                    error,
+                )
+                baseline_mode = None
+                baseline_pwm = 0.0
+            elif baseline_mode == "COOLING" and error > self.deadband_heating:
+                logger.debug(
+                    "Discarding cooling feed-forward (err=%.3f°C requires heating)",
+                    error,
+                )
+                baseline_mode = None
+                baseline_pwm = 0.0
+
             preferred_mode = None
             if baseline_mode is not None:
                 preferred_mode = baseline_mode
@@ -263,38 +390,90 @@ class PIController:
             else:
                 preferred_mode = "COOLING"
 
-            if within_deadband:
-                if baseline_pwm > 0.0:
-                    target_mode = preferred_mode
-                    if target_mode not in ("HEATING", "COOLING"):
-                        target_mode = "HEATING" if self.setpoint >= current_temp else "COOLING"
+            # ========================================================================
+            # TWO-TIER CONTROL STRATEGY
+            # ========================================================================
+            
+            # TIER 1: Near setpoint (≤1°C) - Gentle, trend-aware control
+            if near_setpoint:
+                logger.debug("Near setpoint mode: err=%.3f°C, trend=%.4f°C/s", 
+                            error, temp_trend if temp_trend is not None else 0.0)
+                
+                if within_deadband:
+                    # Within deadband: only apply feed-forward if available
+                    if baseline_pwm > 0.0:
+                        target_mode = preferred_mode
+                        if target_mode not in ("HEATING", "COOLING"):
+                            target_mode = "HEATING" if self.setpoint >= current_temp else "COOLING"
 
-                    if self.current_mode is not None and target_mode != self.current_mode:
-                        if self.last_mode_switch_time is not None:
-                            time_since_switch = current_time - self.last_mode_switch_time
-                            if time_since_switch < self.mode_switch_delay:
-                                logger.debug(
-                                    "Mode switch delayed (%.1f/%.1f sec)",
-                                    time_since_switch,
-                                    self.mode_switch_delay,
-                                )
-                                self.last_error = error
-                                return 0.0, self.current_mode
-                    if target_mode != self.current_mode:
-                        logger.info("Mode switching: %s → %s", self.current_mode, target_mode)
-                        self.current_mode = target_mode
-                        self.last_mode_switch_time = current_time
+                        if self.current_mode is not None and target_mode != self.current_mode:
+                            if self.last_mode_switch_time is not None:
+                                time_since_switch = current_time - self.last_mode_switch_time
+                                if time_since_switch < self.mode_switch_delay:
+                                    logger.debug(
+                                        "Mode switch delayed (%.1f/%.1f sec)",
+                                        time_since_switch,
+                                        self.mode_switch_delay,
+                                    )
+                                    self.last_error = error
+                                    return 0.0, self.current_mode
+                        if target_mode != self.current_mode:
+                            logger.info("Mode switching: %s → %s", self.current_mode, target_mode)
+                            self.current_mode = target_mode
+                            self.last_mode_switch_time = current_time
+                        self.integral = 0.0
+                        assert self.current_mode in ("HEATING", "COOLING")
+                        pwm_limit = self._pwm_limit_for_mode(self.current_mode)
+                        pwm = min(baseline_pwm, pwm_limit)
+                        self.last_error = error
+                        return pwm, self.current_mode
+
                     self.integral = 0.0
-                    assert self.current_mode in ("HEATING", "COOLING")
-                    pwm_limit = self._pwm_limit_for_mode(self.current_mode)
-                    pwm = min(baseline_pwm, pwm_limit)
+                    self.current_mode = "OFF"
                     self.last_error = error
-                    return pwm, self.current_mode
-
-                self.integral = 0.0
-                self.current_mode = "OFF"
-                self.last_error = error
-                return 0.0, "OFF"
+                    return 0.0, "OFF"
+                
+                # Near setpoint but outside deadband: use trend-aware control
+                # Check if temperature is moving toward setpoint
+                if temp_trend is not None:
+                    # Predict where temperature will be in next 5 seconds
+                    predicted_temp = current_temp + temp_trend * 5.0
+                    predicted_error = self.setpoint - predicted_temp
+                    
+                    # If trend is taking us toward setpoint, reduce control effort
+                    if abs(predicted_error) < abs(error):
+                        # Moving toward setpoint - be gentle
+                        if abs(predicted_error) <= active_deadband:
+                            # Predicted to enter deadband - turn off to coast
+                            logger.debug("Coasting: predicted to reach setpoint (pred_err=%.3f°C)", 
+                                        predicted_error)
+                            self.integral = 0.0
+                            self.current_mode = "OFF"
+                            self.last_error = error
+                            return 0.0, "OFF"
+                        else:
+                            # Still approaching but not there yet - use reduced gain
+                            logger.debug("Gentle approach: reducing gains by 50%% (pred_err=%.3f°C)", 
+                                        predicted_error)
+                            gain_reduction = 0.5  # Reduce gains by 50%
+                    else:
+                        # Moving away from setpoint or staying stable - use normal gains
+                        logger.debug("Not approaching setpoint: using normal gains (pred_err=%.3f°C)", 
+                                    predicted_error)
+                        gain_reduction = 1.0
+                else:
+                    # No trend data - use normal but slightly reduced gains
+                    logger.debug("No trend data: using 70%% gains")
+                    gain_reduction = 0.7
+            
+            # TIER 2: Far from setpoint (>1°C) - Aggressive control
+            else:
+                logger.debug("Far from setpoint mode: err=%.3f°C (aggressive control)", abs_error)
+                gain_reduction = 1.0  # Full gains
+            
+            # ========================================================================
+            # STANDARD PI CONTROL (with potentially reduced gains)
+            # ========================================================================
             
             # Time delta
             if self.last_time is None:
@@ -339,12 +518,24 @@ class PIController:
                 current_ki = self.ki_cooling
             pwm_limit = self._pwm_limit_for_mode(self.current_mode)
             
+            # Apply gain reduction for near-setpoint control
+            # (gain_reduction was set above based on two-tier logic)
+            current_kp = current_kp * gain_reduction
+            current_ki = current_ki * gain_reduction
+            
             # Proportional term based on error magnitude (mode encodes sign)
             p_term = current_kp * abs_error
 
             # Integral zone: integrate only when sufficiently far from setpoint
             # to avoid large PWM for small errors. Use 2x deadband as a simple I-zone.
-            i_zone = max(0.0, self.deadband * 2.0)
+            # Pick I-zone per active mode to make asymmetry consistent
+            if self.current_mode == "HEATING":
+                mode_deadband = self.deadband_heating
+            elif self.current_mode == "COOLING":
+                mode_deadband = self.deadband_cooling
+            else:
+                mode_deadband = max(self.deadband_heating, self.deadband_cooling)
+            i_zone = max(0.0, mode_deadband * 2.0)
 
             if dt > 0:
                 if abs_error > i_zone and current_ki > 0:
@@ -570,6 +761,35 @@ class ArduinoController:
             logger.error("Unknown mode: %s", mode)
             return False
 
+    def apply_manual_output(self, direction: str, pwm: float) -> bool:
+        """Apply raw direction (PIN7 state) and PWM without controller logic."""
+        direction = direction.strip().upper()
+        pwm = max(0.0, min(float(pwm), 0.4))
+
+        if direction == "OFF":
+            return self.set_pwm(0.0)
+
+        if direction not in ("HIGH", "LOW"):
+            logger.error("Unknown manual direction: %s", direction)
+            return False
+
+        desired_state = direction
+        changed = False
+
+        if self.current_pin7_state != desired_state:
+            if desired_state == "HIGH":
+                if not self.set_pin7_high():
+                    return False
+            else:
+                if not self.set_pin7_low():
+                    return False
+            changed = True
+
+        if changed:
+            time.sleep(0.02)
+
+        return self.set_pwm(pwm)
+
 
 # ============================================================================
 # Telemetry Client
@@ -727,6 +947,11 @@ class DataLogger:
             "feedforward_mode",
             "temp_rate",
             "lead_seconds",
+            "control_source",
+            "manual_override",
+            "manual_direction",
+            "manual_pwm",
+            "manual_requested_direction",
         ]
         
         self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=fieldnames)
@@ -750,6 +975,11 @@ class DataLogger:
         feedforward_mode: Optional[str] = None,
         temp_rate: Optional[float] = None,
         lead_seconds: Optional[float] = None,
+        control_source: str = "PID",
+        manual_override: bool = False,
+        manual_direction: Optional[str] = None,
+        manual_pwm: float = 0.0,
+        manual_requested_direction: Optional[str] = None,
     ) -> None:
         """Log data point to CSV.
         
@@ -780,6 +1010,11 @@ class DataLogger:
                 "feedforward_mode": feedforward_mode or "",
                 "temp_rate": f"{temp_rate:.5f}" if temp_rate is not None else "",
                 "lead_seconds": f"{lead_seconds:.3f}" if lead_seconds is not None else "",
+                "control_source": control_source,
+                "manual_override": "1" if manual_override else "0",
+                "manual_direction": manual_direction or "",
+                "manual_pwm": f"{manual_pwm:.4f}" if manual_pwm is not None else "",
+                "manual_requested_direction": manual_requested_direction or "",
             }
             
             try:
@@ -949,6 +1184,8 @@ class TemperatureController:
         kp_cooling: Optional[float] = 0.055,
         ki_cooling: Optional[float] = 0.0055,
         deadband: float = 0.15,
+    deadband_heating: Optional[float] = None,
+    deadband_cooling: Optional[float] = None,
         control_interval: float = 1.0,
         mode_switch_delay: float = 18.0,
         heating_pwm_cap: Optional[float] = 0.2,
@@ -977,6 +1214,8 @@ class TemperatureController:
             kp: Proportional gain
             ki: Integral gain
             deadband: Temperature tolerance ±°C
+            deadband_heating: Override for HEATING-side deadband (temperature below setpoint)
+            deadband_cooling: Override for COOLING-side deadband (temperature above setpoint)
             control_interval: Control loop interval in seconds
         """
         self.arduino_port = arduino_port
@@ -984,6 +1223,11 @@ class TemperatureController:
         self.log_dir = log_dir
         self.control_interval = control_interval
         
+        if deadband_heating is None:
+            deadband_heating = deadband * 0.4
+        if deadband_cooling is None:
+            deadband_cooling = deadband * 0.1
+
         # Initialize components
         self.pi_controller = PIController(
             setpoint=setpoint,
@@ -994,10 +1238,13 @@ class TemperatureController:
             kp_cooling=kp_cooling,
             ki_cooling=ki_cooling,
             deadband=deadband,
+            deadband_heating=deadband_heating,
+            deadband_cooling=deadband_cooling,
             pwm_min=0.0,
             pwm_max=pwm_max,
             mode_switch_delay=mode_switch_delay,
             heating_pwm_cap=heating_pwm_cap,
+            near_setpoint_threshold=1.0,  # Default 1°C threshold for two-tier control
         )
         
         self.arduino = ArduinoController(port=arduino_port)
@@ -1038,6 +1285,13 @@ class TemperatureController:
         # Protect shared configuration accessed by HTTP/UI threads
         self._config_lock = threading.Lock()
 
+        # Manual override state (locked by default)
+        self.manual_override_locked = True
+        self.manual_override_enabled = False
+        self.manual_direction = "OFF"
+        self.manual_pwm = 0.0
+        self.manual_direction_requested = "OFF"
+
     def set_ma_window(self, window: int) -> None:
         """Set moving average window (number of samples). 1 disables smoothing."""
         w = max(1, int(window))
@@ -1049,7 +1303,106 @@ class TemperatureController:
     def get_ma_window(self) -> int:
         """Get current moving average window size."""
         return self.ma_window
-    
+
+    # Manual override controls
+    def get_manual_status(self) -> Dict[str, Any]:
+        with self._config_lock:
+            locked = self.manual_override_locked
+            enabled = self.manual_override_enabled
+            direction = self.manual_direction
+            pwm = self.manual_pwm
+        control_source = "MANUAL" if enabled else ("PID" if self.pid_enabled else "IDLE")
+        return {
+            "locked": locked,
+            "enabled": enabled,
+            "direction": direction,
+            "pwm": pwm,
+            "control_source": control_source,
+            "requested_direction": self.manual_direction_requested,
+        }
+
+    def unlock_manual_override(self) -> Dict[str, Any]:
+        with self._config_lock:
+            self.manual_override_locked = False
+        logger.info("Manual override unlocked")
+        return self.get_manual_status()
+
+    def lock_manual_override(self) -> Dict[str, Any]:
+        reset_output = False
+        with self._config_lock:
+            self.manual_override_locked = True
+            if self.manual_override_enabled:
+                reset_output = True
+            self.manual_override_enabled = False
+            self.manual_direction = "OFF"
+            self.manual_pwm = 0.0
+            self.manual_direction_requested = "OFF"
+
+        if reset_output and self.arduino.serial and self.arduino.serial.is_open:
+            try:
+                self.arduino.set_pwm(0.0)
+            except Exception as exc:
+                logger.exception("Failed to reset PWM while locking manual override: %s", exc)
+
+        logger.info("Manual override locked")
+        return self.get_manual_status()
+
+    def enable_manual_override(self) -> Dict[str, Any]:
+        with self._config_lock:
+            if self.manual_override_locked:
+                raise ValueError("Manual override is locked")
+            self.manual_override_enabled = True
+            self.pid_enabled = False
+
+        logger.info("Manual override ENABLED (PID suspended)")
+        return self.get_manual_status()
+
+    def disable_manual_override(self) -> Dict[str, Any]:
+        with self._config_lock:
+            was_enabled = self.manual_override_enabled
+            self.manual_override_enabled = False
+
+        if was_enabled and self.arduino.serial and self.arduino.serial.is_open:
+            try:
+                self.arduino.set_pwm(0.0)
+            except Exception as exc:
+                logger.exception("Failed to set PWM 0 while disabling manual override: %s", exc)
+
+        logger.info("Manual override DISABLED")
+        return self.get_manual_status()
+
+    def set_manual_command(self, direction: str, pwm: float) -> Dict[str, Any]:
+        if direction is None:
+            raise ValueError("Direction is required for manual override")
+
+        direction_token = direction.strip().upper()
+        resolved_direction: str
+
+        if direction_token in ("HIGH", "LOW", "OFF"):
+            resolved_direction = direction_token
+        elif direction_token in ("HEATING", "COOLING"):
+            invert = self.arduino.get_invert_direction() if self.arduino else False
+            if direction_token == "HEATING":
+                resolved_direction = "LOW" if invert else "HIGH"
+            else:
+                resolved_direction = "HIGH" if invert else "LOW"
+        else:
+            raise ValueError(f"Invalid manual direction '{direction}'")
+
+        pwm_value = max(0.0, min(float(pwm), self.pi_controller.get_pwm_max()))
+        if resolved_direction == "OFF":
+            pwm_value = 0.0
+
+        with self._config_lock:
+            if self.manual_override_locked:
+                raise ValueError("Manual override is locked")
+            self.manual_direction = resolved_direction
+            self.manual_pwm = pwm_value
+            self.manual_direction_requested = direction_token
+
+        logger.info("Manual command updated (direction=%s, pwm=%.3f)", resolved_direction, pwm_value)
+        return self.get_manual_status()
+
     def start(self) -> None:
         """Start the temperature controller."""
         if self.running:
@@ -1121,6 +1474,13 @@ class TemperatureController:
                 pwm_ff = 0.0
                 baseline_used = 0.0
                 ff_mode: Optional[str] = None
+                control_source = "PID"
+                manual_direction_active: Optional[str] = None
+                manual_pwm_target = 0.0
+                manual_override_active = False
+                manual_pwm_log: Optional[float] = None
+                lead_applied = 0.0
+                manual_requested_direction = "OFF"
 
                 # 5. Snapshot configurable parameters for this iteration
                 with self._config_lock:
@@ -1128,6 +1488,10 @@ class TemperatureController:
                     ff_tolerance = self.feedforward_tolerance
                     lead_heat = self.lead_time_heating
                     lead_cool = self.lead_time_cooling
+                    manual_override_active = self.manual_override_enabled
+                    manual_direction_active = self.manual_direction
+                    manual_pwm_target = self.manual_pwm
+                    manual_requested_direction = self.manual_direction_requested
 
                 # 6. Estimate temperature rate of change
                 temp_rate: Optional[float] = None
@@ -1139,70 +1503,93 @@ class TemperatureController:
                     self._last_temp_value = obj_temp
                     self._last_temp_time = loop_start
 
-                # 7. Predict steady-state feed-forward contribution
-                if ff_enabled and room_temp is not None:
-                    ff_mode, pwm_ff = self.feedforward.predict(
-                        setpoint=setpoint,
-                        room_temp=room_temp,
-                        heating_cap=self.pi_controller.get_heating_pwm_cap(),
-                        cooling_cap=self.pi_controller.get_pwm_max(),
-                        tolerance=ff_tolerance,
-                    )
+                # 7. Manual override takes precedence
+                if manual_override_active:
+                    control_source = "MANUAL"
+                    direction_to_use = (manual_direction_active or "OFF").upper()
+                    pwm_target = max(0.0, min(manual_pwm_target, self.pi_controller.get_pwm_max()))
+                    if direction_to_use == "OFF":
+                        pwm_target = 0.0
 
-                # 8. Apply predictive lead compensation for measurement lag
-                effective_temp = obj_temp
-                lead_applied = 0.0
-                if obj_temp is not None and temp_rate is not None:
-                    lead_seconds = lead_heat if setpoint >= obj_temp else lead_cool
-                    if lead_seconds > 0.0:
-                        effective_temp = obj_temp + temp_rate * lead_seconds
-                        lead_applied = lead_seconds
-
-                # 9. Run PI controller with feed-forward baseline
-                if self.pid_enabled and effective_temp is not None:
-                    pwm_total, mode = self.pi_controller.compute(
-                        current_temp=effective_temp,
-                        baseline_pwm=pwm_ff,
-                        baseline_mode=ff_mode,
-                    )
-
-                    if mode in ("HEATING", "COOLING"):
-                        pwm_limit_active = (
-                            self.pi_controller.get_heating_pwm_cap()
-                            if mode == "HEATING"
-                            else self.pi_controller.get_pwm_max()
-                        )
-                        if ff_mode == mode:
-                            baseline_used = min(pwm_ff, pwm_limit_active)
-                    
                     if self.arduino.serial and self.arduino.serial.is_open:
-                        if not self.arduino.set_mode(mode, pwm_total):
-                            logger.warning("Failed to set Arduino mode/PWM")
+                        if not self.arduino.apply_manual_output(direction_to_use, pwm_target):
+                            logger.warning("Failed to apply manual override output")
                     else:
-                        logger.debug("Arduino not connected, skipping control output")
-                elif not self.pid_enabled:
-                    # PID disabled - hold outputs off
-                    mode = "STANDBY"
-                    if self.arduino.serial and self.arduino.serial.is_open:
-                        self.arduino.set_mode("OFF", 0.0)
-                    logger.debug("PID control disabled - PWM held at 0.0")
+                        logger.debug("Arduino not connected, manual command buffered")
+
+                    pwm_total = pwm_target
+                    manual_pwm_log = pwm_target
+                    manual_direction_active = direction_to_use
+                    mode = "MANUAL"
                 else:
-                    logger.warning("No objective temperature available - displaying ambient data only")
-                    if ff_enabled and ff_mode in ("HEATING", "COOLING"):
+                    # 7. Predict steady-state feed-forward contribution
+                    if ff_enabled and room_temp is not None:
+                        ff_mode, pwm_ff = self.feedforward.predict(
+                            setpoint=setpoint,
+                            room_temp=room_temp,
+                            heating_cap=self.pi_controller.get_heating_pwm_cap(),
+                            cooling_cap=self.pi_controller.get_pwm_max(),
+                            tolerance=ff_tolerance,
+                        )
+
+                    # 8. Apply predictive lead compensation for measurement lag
+                    effective_temp = obj_temp
+                    if obj_temp is not None and temp_rate is not None:
+                        lead_seconds = lead_heat if setpoint >= obj_temp else lead_cool
+                        if lead_seconds > 0.0:
+                            effective_temp = obj_temp + temp_rate * lead_seconds
+                            lead_applied = lead_seconds
+
+                    # 9. Run PI controller with feed-forward baseline
+                    if self.pid_enabled and effective_temp is not None:
+                        pwm_total, mode = self.pi_controller.compute(
+                            current_temp=effective_temp,
+                            baseline_pwm=pwm_ff,
+                            baseline_mode=ff_mode,
+                        )
+
+                        if mode in ("HEATING", "COOLING"):
+                            pwm_limit_active = (
+                                self.pi_controller.get_heating_pwm_cap()
+                                if mode == "HEATING"
+                                else self.pi_controller.get_pwm_max()
+                            )
+                            if ff_mode == mode:
+                                baseline_used = min(pwm_ff, pwm_limit_active)
+
                         if self.arduino.serial and self.arduino.serial.is_open:
-                            if self.arduino.set_mode(ff_mode, pwm_ff):
-                                pwm_total = pwm_ff
-                                baseline_used = pwm_ff
-                                mode = ff_mode
-                            else:
-                                logger.warning("Failed to apply feed-forward only command")
+                            if not self.arduino.set_mode(mode, pwm_total):
+                                logger.warning("Failed to set Arduino mode/PWM")
+                        else:
+                            logger.debug("Arduino not connected, skipping control output")
+                    elif not self.pid_enabled:
+                        # PID disabled - hold outputs off
+                        mode = "STANDBY"
+                        if self.arduino.serial and self.arduino.serial.is_open:
+                            self.arduino.set_mode("OFF", 0.0)
+                        logger.debug("PID control disabled - PWM held at 0.0")
+                        control_source = "IDLE"
+                    else:
+                        logger.warning("No objective temperature available - displaying ambient data only")
+                        if ff_enabled and ff_mode in ("HEATING", "COOLING"):
+                            if self.arduino.serial and self.arduino.serial.is_open:
+                                if self.arduino.set_mode(ff_mode, pwm_ff):
+                                    pwm_total = pwm_ff
+                                    baseline_used = pwm_ff
+                                    mode = ff_mode
+                                    control_source = "FEEDFORWARD"
+                                else:
+                                    logger.warning("Failed to apply feed-forward only command")
+
+                    manual_direction_active = None
+                    manual_pwm_log = None
 
                 if ff_mode != mode:
                     baseline_used = 0.0
                 pwm_feedback = max(0.0, pwm_total - baseline_used)
                 error_value = setpoint - obj_temp if obj_temp is not None else None
 
-                if ff_enabled:
+                if ff_enabled and not manual_override_active:
                     self.feedforward.update(
                         mode=mode if mode in ("HEATING", "COOLING") else None,
                         pwm=pwm_total,
@@ -1227,6 +1614,11 @@ class TemperatureController:
                     feedforward_mode=ff_mode if baseline_used > 0 else None,
                     temp_rate=temp_rate,
                     lead_seconds=lead_applied if lead_applied > 0 else None,
+                    control_source=control_source,
+                    manual_override=manual_override_active,
+                    manual_direction=manual_direction_active,
+                    manual_pwm=manual_pwm_log if manual_pwm_log is not None else 0.0,
+                    manual_requested_direction=manual_requested_direction,
                 )
                 
                 # 8. Update data buffer for GUI (ALWAYS update so GUI shows something)
@@ -1245,6 +1637,11 @@ class TemperatureController:
                     "temp_rate": temp_rate,
                     "error": error_value,
                     "lead_seconds": lead_applied,
+                    "control_source": control_source,
+                    "manual_override": manual_override_active,
+                    "manual_direction": manual_direction_active,
+                    "manual_pwm": manual_pwm_log if manual_override_active else None,
+                    "manual_requested_direction": manual_requested_direction,
                 }
                 
                 with self.buffer_lock:
@@ -1252,12 +1649,15 @@ class TemperatureController:
                 
                 # 9. Log status
                 logger.info(
-                    "T_obj=%s, Setpoint=%.2f°C, PWM=%.3f, FF=%.3f, Mode=%s, T_room=%s, RH=%s",
+                    "T_obj=%s, Setpoint=%.2f°C, PWM=%.3f, FF=%.3f, Mode=%s, Source=%s, ManualDir=%s, ManualReq=%s, T_room=%s, RH=%s",
                     f"{obj_temp:.2f}°C" if obj_temp is not None else "N/A",
                     setpoint,
                     pwm_total,
                     baseline_used,
                     mode,
+                    control_source,
+                    manual_direction_active if manual_override_active else "--",
+                    manual_requested_direction if manual_override_active else "--",
                     f"{room_temp:.2f}°C" if room_temp is not None else "N/A",
                     f"{humidity:.1f}%%" if humidity is not None else "N/A",
                 )
@@ -1285,6 +1685,11 @@ class TemperatureController:
                     "temp_rate": None,
                     "error": None,
                     "lead_seconds": 0.0,
+                    "control_source": "ERROR",
+                    "manual_override": False,
+                    "manual_direction": None,
+                    "manual_pwm": None,
+                    "manual_requested_direction": self.manual_direction_requested,
                 }
                 with self.buffer_lock:
                     self.data_buffer.append(error_data_point)
@@ -1360,6 +1765,10 @@ class TemperatureController:
 
     def enable_pid(self) -> None:
         """Enable PID control."""
+        with self._config_lock:
+            manual_active = self.manual_override_enabled
+        if manual_active:
+            self.disable_manual_override()
         self.pid_enabled = True
         logger.info("PID control ENABLED")
     
@@ -1382,6 +1791,11 @@ class TemperatureController:
             ff_tolerance = self.feedforward_tolerance
             lead_heat = self.lead_time_heating
             lead_cool = self.lead_time_cooling
+            manual_locked = self.manual_override_locked
+            manual_enabled = self.manual_override_enabled
+            manual_direction = self.manual_direction
+            manual_pwm = self.manual_pwm
+            manual_requested = self.manual_direction_requested
         return {
             "setpoint": self.pi_controller.get_setpoint(),
             "kp": self.pi_controller.get_kp(),
@@ -1391,9 +1805,12 @@ class TemperatureController:
             "ki_heating": self.pi_controller.get_ki_heating(),
             "ki_cooling": self.pi_controller.get_ki_cooling(),
             "deadband": self.pi_controller.get_deadband(),
+            "deadband_heating": self.pi_controller.get_deadband_heating(),
+            "deadband_cooling": self.pi_controller.get_deadband_cooling(),
             "mode_switch_delay": self.pi_controller.get_mode_switch_delay(),
             "heating_pwm_cap": self.pi_controller.get_heating_pwm_cap(),
             "pwm_max": self.pi_controller.get_pwm_max(),
+            "near_setpoint_threshold": self.pi_controller.get_near_setpoint_threshold(),
             "control_interval": self.control_interval,
             "pid_enabled": self.pid_enabled,
             "ma_window": self.get_ma_window(),
@@ -1403,6 +1820,11 @@ class TemperatureController:
             "feedforward": self.feedforward.get_params(),
             "lead_time_heating": lead_heat,
             "lead_time_cooling": lead_cool,
+            "manual_override_locked": manual_locked,
+            "manual_override_enabled": manual_enabled,
+            "manual_direction": manual_direction,
+            "manual_pwm": manual_pwm,
+            "manual_requested_direction": manual_requested,
         }
     
     def get_current_data(self) -> Dict[str, Any]:
@@ -1427,10 +1849,27 @@ class TemperatureController:
                     "temp_rate": None,
                     "error": None,
                     "lead_seconds": 0.0,
+                    "control_source": "IDLE",
+                    "manual_override": False,
+                    "manual_direction": None,
+                    "manual_pwm": None,
+                    "manual_requested_direction": "OFF",
                 }
             
             # Add PID enabled status
             latest["pid_enabled"] = self.pid_enabled
+            manual_status = self.get_manual_status()
+            latest["control_source"] = latest.get("control_source", manual_status["control_source"])
+            latest["manual_override"] = latest.get("manual_override", manual_status["enabled"])
+            latest["manual_direction"] = latest.get("manual_direction", manual_status["direction"])
+            latest["manual_pwm"] = (
+                latest.get("manual_pwm")
+                if latest.get("manual_override")
+                else (manual_status["pwm"] if manual_status["enabled"] else None)
+            )
+            latest["manual_override_locked"] = manual_status["locked"]
+            latest["manual_override_enabled"] = manual_status["enabled"]
+            latest["manual_requested_direction"] = manual_status.get("requested_direction", latest.get("manual_requested_direction", "OFF"))
             return latest
     
     def get_historical_data(self, max_points: int = 1000) -> List[Dict[str, Any]]:
@@ -1466,6 +1905,11 @@ class TemperatureController:
                                 "temp_rate": float(row["temp_rate"]) if row.get("temp_rate") else None,
                                 "error": float(row["error"]) if row.get("error") else None,
                                 "lead_seconds": float(row["lead_seconds"]) if row.get("lead_seconds") else None,
+                                "control_source": row.get("control_source") or None,
+                                "manual_override": (row.get("manual_override") == "1"),
+                                "manual_direction": row.get("manual_direction") or None,
+                                "manual_pwm": float(row["manual_pwm"]) if row.get("manual_pwm") else None,
+                                "manual_requested_direction": row.get("manual_requested_direction") or None,
                             }
                             all_data.append(data_point)
                 
@@ -1515,6 +1959,18 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             self._serve_pid_disable()
         elif path == "/api/pid/status":
             self._serve_pid_status()
+        elif path == "/api/manual/status":
+            self._serve_manual_status()
+        elif path == "/api/manual/unlock":
+            self._serve_manual_unlock()
+        elif path == "/api/manual/lock":
+            self._serve_manual_lock()
+        elif path == "/api/manual/enable":
+            self._serve_manual_enable()
+        elif path == "/api/manual/disable":
+            self._serve_manual_disable()
+        elif path == "/api/manual/set":
+            self._serve_manual_set(parsed.query)
         else:
             self.send_error(404, "Not Found")
     
@@ -1644,6 +2100,16 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 new_deadband = float(params["deadband"][0])
                 self.controller.pi_controller.set_deadband(new_deadband)
                 updated["deadband"] = new_deadband
+
+            if "deadband_heating" in params:
+                new_db_heat = float(params["deadband_heating"][0])
+                self.controller.pi_controller.set_deadband_heating(new_db_heat)
+                updated["deadband_heating"] = new_db_heat
+
+            if "deadband_cooling" in params:
+                new_db_cool = float(params["deadband_cooling"][0])
+                self.controller.pi_controller.set_deadband_cooling(new_db_cool)
+                updated["deadband_cooling"] = new_db_cool
             
             if "mode_switch_delay" in params:
                 new_delay = float(params["mode_switch_delay"][0])
@@ -1654,6 +2120,11 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 new_cap = float(params["heating_pwm_cap"][0])
                 self.controller.pi_controller.set_heating_pwm_cap(new_cap)
                 updated["heating_pwm_cap"] = new_cap
+
+            if "near_setpoint_threshold" in params:
+                new_threshold = float(params["near_setpoint_threshold"][0])
+                self.controller.pi_controller.set_near_setpoint_threshold(new_threshold)
+                updated["near_setpoint_threshold"] = new_threshold
 
             if "control_interval" in params:
                 new_interval = float(params["control_interval"][0])
@@ -1777,6 +2248,89 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             "pid_enabled": self.controller.is_pid_enabled(),
         }
         self._send_json(response)
+
+    def _serve_manual_status(self) -> None:
+        if not self.controller:
+            self.send_error(500, "Controller not initialized")
+            return
+
+        status = self.controller.get_manual_status()
+        self._send_json(status)
+
+    def _serve_manual_unlock(self) -> None:
+        if not self.controller:
+            self.send_error(500, "Controller not initialized")
+            return
+
+        status = self.controller.unlock_manual_override()
+        status["message"] = "Manual override unlocked"
+        self._send_json(status)
+
+    def _serve_manual_lock(self) -> None:
+        if not self.controller:
+            self.send_error(500, "Controller not initialized")
+            return
+
+        status = self.controller.lock_manual_override()
+        status["message"] = "Manual override locked"
+        self._send_json(status)
+
+    def _serve_manual_enable(self) -> None:
+        if not self.controller:
+            self.send_error(500, "Controller not initialized")
+            return
+
+        try:
+            status = self.controller.enable_manual_override()
+        except ValueError as exc:
+            self.send_error(400, str(exc))
+            return
+
+        status["message"] = "Manual override enabled"
+        self._send_json(status)
+
+    def _serve_manual_disable(self) -> None:
+        if not self.controller:
+            self.send_error(500, "Controller not initialized")
+            return
+
+        status = self.controller.disable_manual_override()
+        status["message"] = "Manual override disabled"
+        self._send_json(status)
+
+    def _serve_manual_set(self, query: str) -> None:
+        if not self.controller:
+            self.send_error(500, "Controller not initialized")
+            return
+
+        params = parse_qs(query)
+        direction_param: Optional[str] = None
+        for key in ("direction", "mode"):
+            if key in params and params[key]:
+                direction_param = params[key][0]
+                break
+
+        if direction_param is None:
+            self.send_error(400, "Missing 'direction' parameter")
+            return
+
+        try:
+            if "pwm" in params and params["pwm"]:
+                pwm_value = float(params["pwm"][0])
+            else:
+                pwm_value = float(self.controller.get_manual_status().get("pwm", 0.0) or 0.0)
+        except ValueError:
+            self.send_error(400, "Invalid pwm value")
+            return
+
+        try:
+            status = self.controller.set_manual_command(direction_param, pwm_value)
+        except ValueError as exc:
+            self.send_error(400, str(exc))
+            return
+
+        status["message"] = "Manual command updated"
+        self._send_json(status)
     
     def _serve_gui(self) -> None:
         """Serve web GUI."""
@@ -1908,6 +2462,20 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             outline: none;
             border-color: #667eea;
         }
+
+        .control-group select {
+            padding: 10px 15px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 1em;
+            width: 160px;
+            transition: border-color 0.3s;
+        }
+
+        .control-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
         
         .control-group button {
             padding: 10px 25px;
@@ -2019,6 +2587,18 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             <div class="status-item">
                 <h3>Control Mode</h3>
                 <div class="value" id="mode">--</div>
+            </div>
+            <div class="status-item">
+                <h3>Control Source</h3>
+                <div class="value" id="control-source">PID</div>
+            </div>
+            <div class="status-item">
+                <h3>Manual Direction</h3>
+                <div class="value" id="manual-direction">--</div>
+            </div>
+            <div class="status-item">
+                <h3>Manual PWM</h3>
+                <div class="value" id="manual-pwm">--</div>
             </div>
             <div class="status-item">
                 <h3>PWM Output</h3>
@@ -2151,6 +2731,32 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 </div>
             </div>
 
+            <div class="control-section" id="manual-override-section">
+                <h3 class="control-heading">Manual Override (Locked)</h3>
+                <div class="control-hint" style="margin-bottom: 10px;">Unlock to bypass PID and drive PWM/direction directly. Use with caution.</div>
+                <div class="control-group">
+                    <button id="manual-lock-btn" onclick="toggleManualLock()">🔒 Unlock Manual Override</button>
+                    <span id="manual-lock-status" style="font-weight: 600; color: #c0392b;">LOCKED</span>
+                    <button id="manual-enable-btn" onclick="toggleManualOverride()" disabled>Enable Manual Override</button>
+                </div>
+                <div class="control-group" style="margin-top: 10px;">
+                    <label for="manual-mode-select">Manual Direction:</label>
+                    <select id="manual-mode-select" disabled>
+                        <option value="OFF">OFF</option>
+                        <option value="HEATING">HEATING (logical)</option>
+                        <option value="COOLING">COOLING (logical)</option>
+                        <option value="HIGH">RAW HIGH</option>
+                        <option value="LOW">RAW LOW</option>
+                    </select>
+
+                    <label for="manual-pwm-input" style="margin-left: 20px;">Manual PWM:</label>
+                    <input type="number" id="manual-pwm-input" step="0.001" min="0" max="0.4" value="0.000" disabled>
+
+                    <button id="manual-apply-btn" onclick="applyManualCommand()" disabled>Apply Manual Command</button>
+                </div>
+                <div class="control-hint" style="margin-top: 10px;">Logical directions respect the invert-direction flag; RAW options drive the H-bridge pin directly.</div>
+            </div>
+
             <div class="control-group" style="margin-top: 20px; gap: 20px;">
                 <button onclick="updateParams()">Update Parameters</button>
                 <button onclick="resetFeedforward()" style="background: linear-gradient(135deg, #ff6b6b 0%, #ff4d4f 100%);">Reset Feed-forward Learning</button>
@@ -2182,6 +2788,7 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
         // Chart data
         let tempChart, controlChart;
         let historicalData = [];
+    let manualStatus = { locked: true, enabled: false, direction: "OFF", pwm: 0, requestedDirection: "OFF" };
         
         // Initialize charts
         function initCharts() {
@@ -2339,6 +2946,178 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             });
         }
         
+        function describeManualDirection(direction) {
+            if (!direction) {
+                return '--';
+            }
+            const token = String(direction).toUpperCase();
+            if (token === 'HIGH') return 'RAW HIGH';
+            if (token === 'LOW') return 'RAW LOW';
+            if (token === 'OFF') return 'OFF';
+            return token;
+        }
+
+        function updateManualControls() {
+            const lockBtn = document.getElementById('manual-lock-btn');
+            const enableBtn = document.getElementById('manual-enable-btn');
+            const modeSelect = document.getElementById('manual-mode-select');
+            const pwmInput = document.getElementById('manual-pwm-input');
+            const applyBtn = document.getElementById('manual-apply-btn');
+            const lockStatus = document.getElementById('manual-lock-status');
+            const heading = document.querySelector('#manual-override-section .control-heading');
+            if (!lockBtn || !enableBtn || !modeSelect || !pwmInput || !applyBtn || !lockStatus) {
+                return;
+            }
+
+            if (heading) {
+                heading.textContent = manualStatus.locked ? 'Manual Override (Locked)' : 'Manual Override (Unlocked)';
+            }
+
+            if (manualStatus.locked) {
+                lockBtn.textContent = '🔒 Unlock Manual Override';
+                lockStatus.textContent = 'LOCKED';
+                lockStatus.style.color = '#c0392b';
+                enableBtn.disabled = true;
+                modeSelect.disabled = true;
+                pwmInput.disabled = true;
+                applyBtn.disabled = true;
+                enableBtn.style.background = 'linear-gradient(135deg, #bdc3c7 0%, #95a5a6 100%)';
+            } else {
+                lockBtn.textContent = '🔓 Lock Manual Override';
+                lockStatus.textContent = manualStatus.enabled ? 'UNLOCKED • ACTIVE' : 'UNLOCKED';
+                lockStatus.style.color = manualStatus.enabled ? '#28a745' : '#2c3e50';
+                enableBtn.disabled = false;
+                modeSelect.disabled = false;
+                pwmInput.disabled = false;
+                applyBtn.disabled = false;
+                enableBtn.style.background = manualStatus.enabled
+                    ? 'linear-gradient(135deg, #dc3545 0%, #c82333 100%)'
+                    : 'linear-gradient(135deg, #f39c12 0%, #f1c40f 100%)';
+            }
+
+            enableBtn.textContent = manualStatus.enabled ? 'Disable Manual Override' : 'Enable Manual Override';
+            enableBtn.style.color = '#fff';
+
+            const options = [...modeSelect.options].map(opt => opt.value);
+            let selectValue = manualStatus.requestedDirection ? manualStatus.requestedDirection.toUpperCase() : 'OFF';
+            if (!options.includes(selectValue)) {
+                const fallback = manualStatus.direction ? manualStatus.direction.toUpperCase() : 'OFF';
+                selectValue = options.includes(fallback) ? fallback : 'OFF';
+            }
+            modeSelect.value = options.includes(selectValue) ? selectValue : 'OFF';
+
+            const pwmValue = typeof manualStatus.pwm === 'number' ? manualStatus.pwm : 0;
+            pwmInput.value = pwmValue.toFixed(3);
+        }
+
+        async function loadManualStatus() {
+            try {
+                const response = await fetch('/api/manual/status', { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                manualStatus = {
+                    locked: Boolean(data.locked),
+                    enabled: Boolean(data.enabled),
+                    direction: data.direction || 'OFF',
+                    pwm: typeof data.pwm === 'number' ? data.pwm : 0,
+                    requestedDirection: data.requested_direction || data.direction || 'OFF',
+                };
+                updateManualControls();
+            } catch (error) {
+                console.error('Error loading manual status:', error);
+            }
+        }
+
+        async function toggleManualLock() {
+            const endpoint = manualStatus.locked ? '/api/manual/unlock' : '/api/manual/lock';
+            try {
+                const response = await fetch(endpoint, { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                manualStatus = {
+                    locked: Boolean(data.locked),
+                    enabled: Boolean(data.enabled),
+                    direction: data.direction || manualStatus.direction,
+                    pwm: typeof data.pwm === 'number' ? data.pwm : manualStatus.pwm,
+                    requestedDirection: data.requested_direction || manualStatus.requestedDirection,
+                };
+                updateManualControls();
+                if (data.message) {
+                    console.log(data.message);
+                }
+            } catch (error) {
+                console.error('Error toggling manual lock:', error);
+                alert('Failed to toggle manual override lock');
+            }
+        }
+
+        async function toggleManualOverride() {
+            const endpoint = manualStatus.enabled ? '/api/manual/disable' : '/api/manual/enable';
+            try {
+                const response = await fetch(endpoint, { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                manualStatus = {
+                    locked: Boolean(data.locked),
+                    enabled: Boolean(data.enabled),
+                    direction: data.direction || manualStatus.direction,
+                    pwm: typeof data.pwm === 'number' ? data.pwm : manualStatus.pwm,
+                    requestedDirection: data.requested_direction || manualStatus.requestedDirection,
+                };
+                updateManualControls();
+                if (data.message) {
+                    alert(data.message);
+                }
+                await loadPIDStatus();
+            } catch (error) {
+                console.error('Error toggling manual override:', error);
+                alert('Failed to toggle manual override');
+            }
+        }
+
+        async function applyManualCommand() {
+            const modeSelect = document.getElementById('manual-mode-select');
+            const pwmInput = document.getElementById('manual-pwm-input');
+            if (!modeSelect || !pwmInput) {
+                return;
+            }
+            const direction = modeSelect.value;
+            let pwmValue = parseFloat(pwmInput.value);
+            if (Number.isNaN(pwmValue)) {
+                alert('Invalid PWM value');
+                return;
+            }
+            pwmValue = Math.min(Math.max(pwmValue, 0), 0.4);
+            pwmInput.value = pwmValue.toFixed(3);
+
+            const url = `/api/manual/set?direction=${encodeURIComponent(direction)}&pwm=${pwmValue}`;
+            try {
+                const response = await fetch(url, { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                manualStatus = {
+                    locked: Boolean(data.locked),
+                    enabled: Boolean(data.enabled),
+                    direction: data.direction || direction,
+                    pwm: typeof data.pwm === 'number' ? data.pwm : pwmValue,
+                    requestedDirection: data.requested_direction || direction,
+                };
+                updateManualControls();
+                alert(data.message || 'Manual command applied');
+            } catch (error) {
+                console.error('Error applying manual command:', error);
+                alert('Failed to apply manual command');
+            }
+        }
+        
         // Update status display
         function updateStatus(data) {
             console.log('Updating status with data:', data);
@@ -2380,6 +3159,56 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 const leadElement = document.getElementById('lead-seconds');
                 const leadVal = typeof data.lead_seconds === 'number' ? data.lead_seconds : null;
                 leadElement.innerHTML = leadVal !== null && leadVal > 0 ? `${leadVal.toFixed(2)}<span class="unit">s</span>` : '--';
+
+                const controlSourceElement = document.getElementById('control-source');
+                if (controlSourceElement) {
+                    controlSourceElement.textContent = data.control_source || (data.pid_enabled ? 'PID' : 'IDLE');
+                }
+
+                const manualDirElement = document.getElementById('manual-direction');
+                if (manualDirElement) {
+                    if (data.manual_override) {
+                        const requestedDir = (data.manual_requested_direction || data.manual_direction || '').toUpperCase();
+                        const rawDir = (data.manual_direction || '').toUpperCase();
+                        let label = describeManualDirection(requestedDir || rawDir || '');
+                        const rawLabel = describeManualDirection(rawDir || '');
+                        if (requestedDir && rawDir && requestedDir !== rawDir && rawDir !== '') {
+                            label = `${label} (${rawLabel})`;
+                        }
+                        manualDirElement.textContent = label;
+                    } else {
+                        manualDirElement.textContent = '--';
+                    }
+                }
+
+                const manualPwmElement = document.getElementById('manual-pwm');
+                if (manualPwmElement) {
+                    const manualPwmValue = typeof data.manual_pwm === 'number' ? data.manual_pwm : null;
+                    if (data.manual_override && manualPwmValue !== null) {
+                        manualPwmElement.innerHTML = `${manualPwmValue.toFixed(3)}<span class="unit"></span>`;
+                    } else {
+                        manualPwmElement.textContent = '--';
+                    }
+                }
+
+                if (typeof data.manual_override_locked === 'boolean') {
+                    manualStatus.locked = data.manual_override_locked;
+                }
+                if (typeof data.manual_override === 'boolean') {
+                    manualStatus.enabled = data.manual_override;
+                }
+                if (typeof data.manual_direction === 'string') {
+                    manualStatus.direction = data.manual_direction;
+                }
+                if (manualStatus.enabled && typeof data.manual_pwm === 'number') {
+                    manualStatus.pwm = data.manual_pwm;
+                } else if (!manualStatus.enabled) {
+                    manualStatus.pwm = 0;
+                }
+                if (typeof data.manual_requested_direction === 'string') {
+                    manualStatus.requestedDirection = data.manual_requested_direction;
+                }
+                updateManualControls();
                 
                 document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
                 
@@ -2430,6 +3259,11 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             let modeValue = 0;
             if (data.mode === 'HEATING') modeValue = 1;
             else if (data.mode === 'COOLING') modeValue = -1;
+            else if (data.mode === 'MANUAL') {
+                if (data.manual_direction === 'HIGH') modeValue = 1;
+                else if (data.manual_direction === 'LOW') modeValue = -1;
+                else modeValue = 0;
+            }
             
             controlChart.data.datasets[3].data.push({
                 x: timestamp,
@@ -2512,6 +3346,11 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                         let modeValue = 0;
                         if (point.mode === 'HEATING') modeValue = 1;
                         else if (point.mode === 'COOLING') modeValue = -1;
+                        else if (point.mode === 'MANUAL') {
+                            if (point.manual_direction === 'HIGH') modeValue = 1;
+                            else if (point.manual_direction === 'LOW') modeValue = -1;
+                            else modeValue = 0;
+                        }
                         
                         controlChart.data.datasets[3].data.push({
                             x: timestamp,
@@ -2702,6 +3541,49 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
 
                 if (typeof data.lead_time_heating === 'number') document.getElementById('lead-time-heating-input').value = data.lead_time_heating.toFixed(2);
                 if (typeof data.lead_time_cooling === 'number') document.getElementById('lead-time-cooling-input').value = data.lead_time_cooling.toFixed(2);
+
+                if (typeof data.manual_pwm === 'number') {
+                    const manualPwmInput = document.getElementById('manual-pwm-input');
+                    if (manualPwmInput) {
+                        manualPwmInput.value = data.manual_pwm.toFixed(3);
+                    }
+                }
+                const manualModeSelect = document.getElementById('manual-mode-select');
+                if (manualModeSelect) {
+                    const optionValues = [...manualModeSelect.options].map(opt => opt.value);
+                    let selectValue = null;
+                    if (typeof data.manual_requested_direction === 'string') {
+                        const candidate = data.manual_requested_direction.toUpperCase();
+                        if (optionValues.includes(candidate)) {
+                            selectValue = candidate;
+                        }
+                    }
+                    if (!selectValue && typeof data.manual_direction === 'string') {
+                        const candidate = data.manual_direction.toUpperCase();
+                        if (optionValues.includes(candidate)) {
+                            selectValue = candidate;
+                        }
+                    }
+                    if (selectValue) {
+                        manualModeSelect.value = selectValue;
+                    }
+                }
+                if (typeof data.manual_override_locked === 'boolean') {
+                    manualStatus.locked = data.manual_override_locked;
+                }
+                if (typeof data.manual_override_enabled === 'boolean') {
+                    manualStatus.enabled = data.manual_override_enabled;
+                }
+                if (typeof data.manual_direction === 'string') {
+                    manualStatus.direction = data.manual_direction;
+                }
+                if (typeof data.manual_pwm === 'number') {
+                    manualStatus.pwm = data.manual_pwm;
+                }
+                if (typeof data.manual_requested_direction === 'string') {
+                    manualStatus.requestedDirection = data.manual_requested_direction;
+                }
+                updateManualControls();
             } catch (error) {
                 console.error('Error loading parameters:', error);
             }
@@ -2748,6 +3630,7 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 
                 // Update button state
                 await loadPIDStatus();
+                await loadManualStatus();
             } catch (error) {
                 console.error('Error toggling PID:', error);
                 alert('Failed to toggle PID control');
@@ -2768,6 +3651,9 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 
                 console.log('Loading PID status...');
                 await loadPIDStatus();
+
+                console.log('Loading manual status...');
+                await loadManualStatus();
                 
                 console.log('Loading historical data...');
                 await loadHistoricalData();
@@ -2775,6 +3661,7 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 console.log('Starting periodic updates...');
                 setInterval(fetchCurrentData, UPDATE_INTERVAL);
                 setInterval(loadPIDStatus, UPDATE_INTERVAL);
+                setInterval(loadManualStatus, UPDATE_INTERVAL * 3);
                 
                 console.log('Fetching initial current data...');
                 await fetchCurrentData();
@@ -2861,38 +3748,50 @@ def main() -> None:
     parser.add_argument(
         "--kp",
         type=float,
-        default=0.06,
-        help="Base proportional gain before per-mode tuning (default: 0.06)",
+        default=0.045,
+        help="Base proportional gain before per-mode tuning (default: 0.045)",
     )
     parser.add_argument(
         "--ki",
         type=float,
-        default=0.0075,
-        help="Base integral gain before per-mode tuning (default: 0.0075)",
+        default=0.0045,
+        help="Base integral gain before per-mode tuning (default: 0.0045)",
     )
     parser.add_argument(
         "--deadband",
         type=float,
-        default=0.12,
-        help="Temperature deadband ±°C (default: 0.12)",
+        default=0.15,
+        help="Temperature deadband ±°C (default: 0.15)",
+    )
+    parser.add_argument(
+        "--deadband-heating",
+        type=float,
+        default=None,
+        help="Deadband used while heating (temperature below setpoint). Defaults to 40% of --deadband",
+    )
+    parser.add_argument(
+        "--deadband-cooling",
+        type=float,
+        default=None,
+        help="Deadband used while cooling (temperature above setpoint). Defaults to 10% of --deadband",
     )
     parser.add_argument(
         "--mode-switch-delay",
         type=float,
-        default=12.0,
-        help="Minimum seconds between heating/cooling mode switches (default: 12.0)",
+        default=18.0,
+        help="Minimum seconds between heating/cooling mode switches (default: 18.0)",
     )
     parser.add_argument(
         "--heating-pwm-cap",
         type=float,
-        default=0.22,
-        help="Cap on PWM during HEATING (<= pwm_max, default: 0.22)",
+        default=0.20,
+        help="Cap on PWM during HEATING (<= pwm_max, default: 0.20)",
     )
     parser.add_argument(
         "--ma-window",
         type=int,
-        default=4,
-        help="Moving average window (samples) for objective temperature (default: 4)",
+        default=30,
+        help="Moving average window (samples) for objective temperature (default: 30)",
     )
     parser.add_argument(
         "--invert-direction",
@@ -2939,6 +3838,8 @@ def main() -> None:
         kp=args.kp,
         ki=args.ki,
         deadband=args.deadband,
+    deadband_heating=args.deadband_heating,
+    deadband_cooling=args.deadband_cooling,
         control_interval=args.control_interval,
         mode_switch_delay=args.mode_switch_delay,
         heating_pwm_cap=args.heating_pwm_cap,
