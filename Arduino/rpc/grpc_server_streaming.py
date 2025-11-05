@@ -413,7 +413,11 @@ class DueStreamingService(Due, _pb2_grpc.DueStreamingServicer):
                 try:
                     args = [_value_from_variant(arg) for arg in request.args]
                     kwargs = {key: _value_from_variant(val) for key, val in request.kwargs.items()}
-                    result = target(*args, **kwargs)
+                    
+                    # Acquire lock for serial port access to prevent concurrent commands
+                    with self._lock:
+                        result = target(*args, **kwargs)
+                    
                     response.result.CopyFrom(_variant_from_value(result))
                 except DueError as exc:
                     response.error = f"DueError: {exc}"

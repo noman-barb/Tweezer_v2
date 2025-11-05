@@ -73,9 +73,11 @@ def _decode_variant(variant: due_streaming_pb2.Variant) -> Any:
 class DueStreamingClient:
     """Streaming gRPC client for Arduino Due bridge."""
     
-    def __init__(self, target: str, *, timeout: float = 5.0):
+    def __init__(self, target: str, *, timeout: float = 5.0, enable_commands: bool = True, enable_telemetry: bool = True):
         self._target = target
         self._timeout = timeout
+        self._enable_commands = enable_commands
+        self._enable_telemetry = enable_telemetry
         self._channel: Optional[grpc.Channel] = None
         self._stub: Optional[due_streaming_pb2_grpc.DueStreamingStub] = None
         self._request_queue: queue.Queue = queue.Queue()
@@ -107,13 +109,15 @@ class DueStreamingClient:
         self._stub = due_streaming_pb2_grpc.DueStreamingStub(self._channel)
         self._stop_event.clear()
         
-        # Start command streaming thread
-        self._stream_thread = threading.Thread(target=self._stream_commands, daemon=True)
-        self._stream_thread.start()
+        # Start command streaming thread only if commands are enabled
+        if self._enable_commands:
+            self._stream_thread = threading.Thread(target=self._stream_commands, daemon=True)
+            self._stream_thread.start()
         
-        # Start telemetry streaming thread
-        self._telemetry_thread = threading.Thread(target=self._stream_telemetry, daemon=True)
-        self._telemetry_thread.start()
+        # Start telemetry streaming thread only if telemetry is enabled
+        if self._enable_telemetry:
+            self._telemetry_thread = threading.Thread(target=self._stream_telemetry, daemon=True)
+            self._telemetry_thread.start()
         
         self._connected = True
 
@@ -210,6 +214,8 @@ class DueStreamingClient:
         """Call a method on the Due bridge."""
         if not self._connected:
             raise RuntimeError("Client not connected")
+        if not self._enable_commands:
+            raise RuntimeError("Commands not enabled for this client. Create client with enable_commands=True")
         
         request_id = self._get_next_request_id()
         request = due_streaming_pb2.StreamRequest(method=method, request_id=request_id)

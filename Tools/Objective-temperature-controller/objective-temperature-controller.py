@@ -8,6 +8,8 @@ This system:
 5. Provides HTTP server with GET endpoint for setpoint control (no-cache)
 6. Web GUI showing: current temps, humidity, time-series plots, setpoint control
 7. Maintains CSV log with data persistence and gap detection
+8. Learns asymmetric heat-loss gains for feed-forward PWM compensation
+9. Provides per-mode PI gains plus predictive lead settings via HTTP API
 """
 
 from __future__ import annotations
@@ -50,6 +52,10 @@ class PIController:
         setpoint: float = 25.0,
         kp: float = 0.05,
         ki: float = 0.01,
+        kp_heating: Optional[float] = None,
+        ki_heating: Optional[float] = None,
+        kp_cooling: Optional[float] = None,
+        ki_cooling: Optional[float] = None,
         deadband: float = 0.1,
         pwm_min: float = 0.0,
         pwm_max: float = 0.4,
@@ -68,8 +74,12 @@ class PIController:
             mode_switch_delay: Minimum seconds between heating/cooling mode switches
         """
         self.setpoint = setpoint
-        self.kp = kp
-        self.ki = ki
+        self.kp = float(kp)
+        self.ki = float(ki)
+        self.kp_heating = float(kp_heating) if kp_heating is not None else float(kp)
+        self.ki_heating = float(ki_heating) if ki_heating is not None else float(ki)
+        self.kp_cooling = float(kp_cooling) if kp_cooling is not None else float(kp)
+        self.ki_cooling = float(ki_cooling) if ki_cooling is not None else float(ki)
         self.deadband = deadband
         self.pwm_min = pwm_min
         self.pwm_max = pwm_max
@@ -102,24 +112,66 @@ class PIController:
     def set_kp(self, kp: float) -> None:
         """Update proportional gain."""
         with self._lock:
-            self.kp = kp
+            self.kp = float(kp)
+            self.kp_heating = self.kp
+            self.kp_cooling = self.kp
             logger.info("Kp updated to %.4f", kp)
     
     def get_kp(self) -> float:
         """Get current Kp."""
         with self._lock:
             return self.kp
+
+    def set_kp_heating(self, kp: float) -> None:
+        with self._lock:
+            self.kp_heating = float(kp)
+            self.kp = self.kp_heating
+            logger.info("Heating Kp updated to %.4f", self.kp_heating)
+
+    def get_kp_heating(self) -> float:
+        with self._lock:
+            return self.kp_heating
+
+    def set_kp_cooling(self, kp: float) -> None:
+        with self._lock:
+            self.kp_cooling = float(kp)
+            logger.info("Cooling Kp updated to %.4f", self.kp_cooling)
+
+    def get_kp_cooling(self) -> float:
+        with self._lock:
+            return self.kp_cooling
     
     def set_ki(self, ki: float) -> None:
         """Update integral gain."""
         with self._lock:
-            self.ki = ki
+            self.ki = float(ki)
+            self.ki_heating = self.ki
+            self.ki_cooling = self.ki
             logger.info("Ki updated to %.4f", ki)
     
     def get_ki(self) -> float:
         """Get current Ki."""
         with self._lock:
             return self.ki
+
+    def set_ki_heating(self, ki: float) -> None:
+        with self._lock:
+            self.ki_heating = float(ki)
+            self.ki = self.ki_heating
+            logger.info("Heating Ki updated to %.4f", self.ki_heating)
+
+    def get_ki_heating(self) -> float:
+        with self._lock:
+            return self.ki_heating
+
+    def set_ki_cooling(self, ki: float) -> None:
+        with self._lock:
+            self.ki_cooling = float(ki)
+            logger.info("Cooling Ki updated to %.4f", self.ki_cooling)
+
+    def get_ki_cooling(self) -> float:
+        with self._lock:
+            return self.ki_cooling
     
     def set_deadband(self, deadband: float) -> None:
         """Update deadband."""
@@ -153,6 +205,14 @@ class PIController:
     def get_heating_pwm_cap(self) -> float:
         with self._lock:
             return self.heating_pwm_cap
+
+    def get_pwm_max(self) -> float:
+        with self._lock:
+            return self.pwm_max
+
+    def get_pwm_min(self) -> float:
+        with self._lock:
+            return self.pwm_min
     
     def reset(self) -> None:
         """Reset controller state."""
@@ -162,26 +222,78 @@ class PIController:
             self.last_time = None
             logger.info("PI controller reset")
     
-    def compute(self, current_temp: float) -> Tuple[float, str]:
+    def _pwm_limit_for_mode(self, mode: str) -> float:
+        if mode == "HEATING":
+            return self.heating_pwm_cap
+        return self.pwm_max
+
+    def compute(
+        self,
+        current_temp: float,
+        baseline_pwm: float = 0.0,
+        baseline_mode: Optional[str] = None,
+    ) -> Tuple[float, str]:
         """Compute PWM output and heating/cooling mode.
         
         Args:
             current_temp: Current objective temperature in °C
+            baseline_pwm: Feed-forward PWM contribution (same scale as output)
+            baseline_mode: Optional preferred mode for the feed-forward term
         
         Returns:
             Tuple of (pwm_value, mode) where mode is "HEATING", "COOLING", or "OFF"
         """
         with self._lock:
             current_time = time.time()
+            baseline_pwm = max(self.pwm_min, min(float(baseline_pwm), self.pwm_max))
+            if baseline_pwm <= self.pwm_min + 1e-9:
+                baseline_pwm = 0.0
+            if baseline_pwm == 0.0 or baseline_mode not in ("HEATING", "COOLING"):
+                baseline_mode = None
             
             # Calculate error
             error = self.setpoint - current_temp
-            
-            # Check if within deadband
-            if abs(error) <= self.deadband:
-                # Within tolerance - turn off
-                self.integral = 0.0  # Reset integral when in deadband
-                self.current_mode = "OFF"  # Update mode state
+            abs_error = abs(error)
+            within_deadband = abs_error <= self.deadband
+            preferred_mode = None
+            if baseline_mode is not None:
+                preferred_mode = baseline_mode
+            elif error > 0:
+                preferred_mode = "HEATING"
+            else:
+                preferred_mode = "COOLING"
+
+            if within_deadband:
+                if baseline_pwm > 0.0:
+                    target_mode = preferred_mode
+                    if target_mode not in ("HEATING", "COOLING"):
+                        target_mode = "HEATING" if self.setpoint >= current_temp else "COOLING"
+
+                    if self.current_mode is not None and target_mode != self.current_mode:
+                        if self.last_mode_switch_time is not None:
+                            time_since_switch = current_time - self.last_mode_switch_time
+                            if time_since_switch < self.mode_switch_delay:
+                                logger.debug(
+                                    "Mode switch delayed (%.1f/%.1f sec)",
+                                    time_since_switch,
+                                    self.mode_switch_delay,
+                                )
+                                self.last_error = error
+                                return 0.0, self.current_mode
+                    if target_mode != self.current_mode:
+                        logger.info("Mode switching: %s → %s", self.current_mode, target_mode)
+                        self.current_mode = target_mode
+                        self.last_mode_switch_time = current_time
+                    self.integral = 0.0
+                    assert self.current_mode in ("HEATING", "COOLING")
+                    pwm_limit = self._pwm_limit_for_mode(self.current_mode)
+                    pwm = min(baseline_pwm, pwm_limit)
+                    self.last_error = error
+                    return pwm, self.current_mode
+
+                self.integral = 0.0
+                self.current_mode = "OFF"
+                self.last_error = error
                 return 0.0, "OFF"
             
             # Time delta
@@ -193,10 +305,7 @@ class PIController:
             self.last_time = current_time
             
             # Determine desired mode
-            if error > 0:
-                desired_mode = "HEATING"
-            else:
-                desired_mode = "COOLING"
+            desired_mode = preferred_mode
             
             # Check if mode switch is allowed
             if self.current_mode is not None and desired_mode != self.current_mode:
@@ -209,7 +318,9 @@ class PIController:
                             time_since_switch,
                             self.mode_switch_delay,
                         )
-                        return 0.0, self.current_mode
+                        desired_mode = self.current_mode
+                        if baseline_mode != desired_mode:
+                            baseline_pwm = 0.0
             
             # Update mode if switching
             if desired_mode != self.current_mode:
@@ -218,17 +329,27 @@ class PIController:
                 self.last_mode_switch_time = current_time
                 self.integral = 0.0  # Reset integral on mode switch
             
+            # Select gains and limits for the active mode
+            assert self.current_mode in ("HEATING", "COOLING")
+            if self.current_mode == "HEATING":
+                current_kp = self.kp_heating
+                current_ki = self.ki_heating
+            else:
+                current_kp = self.kp_cooling
+                current_ki = self.ki_cooling
+            pwm_limit = self._pwm_limit_for_mode(self.current_mode)
+            
             # Proportional term based on error magnitude (mode encodes sign)
-            p_term = self.kp * abs(error)
+            p_term = current_kp * abs_error
 
             # Integral zone: integrate only when sufficiently far from setpoint
             # to avoid large PWM for small errors. Use 2x deadband as a simple I-zone.
             i_zone = max(0.0, self.deadband * 2.0)
 
             if dt > 0:
-                if abs(error) > i_zone and self.ki > 0:
-                    # Integrate only outside the I-zone
-                    self.integral += error * dt
+                if abs_error > i_zone and current_ki > 0:
+                    # Integrate only outside the I-zone using magnitude so cooling still ramps PWM
+                    self.integral += abs_error * dt
                 else:
                     # Apply a small leak toward zero inside I-zone to unwind residual integral
                     leak_per_sec = 0.1  # 10%/s decay inside I-zone
@@ -236,21 +357,19 @@ class PIController:
                     self.integral *= (1.0 - decay)
 
             # Dynamic anti-windup: clamp integral contribution to remaining headroom
-            if self.ki > 0:
-                # Remaining headroom before hitting pwm_max based on P term
-                headroom = max(0.0, self.pwm_max - p_term)
-                max_integral = headroom / self.ki
-                self.integral = max(-max_integral, min(self.integral, max_integral))
+            if current_ki > 0:
+                # Remaining headroom before hitting pwm limit based on P term and feed-forward
+                headroom = max(0.0, pwm_limit - baseline_pwm - p_term)
+                max_integral = headroom / current_ki
+                self.integral = max(0.0, min(self.integral, max_integral))
             else:
                 self.integral = 0.0
 
-            output = p_term + self.ki * self.integral
+            feedback = p_term + current_ki * self.integral
+            output = baseline_pwm + feedback
 
             # Clamp output strictly within limits
-            pwm = max(self.pwm_min, min(output, self.pwm_max))
-            # Apply asymmetric limit: reduce max PWM when heating
-            if self.current_mode == "HEATING":
-                pwm = min(pwm, self.heating_pwm_cap)
+            pwm = max(self.pwm_min, min(output, pwm_limit))
             
             self.last_error = error
             
@@ -602,6 +721,12 @@ class DataLogger:
             "room_temp",
             "humidity",
             "error",
+            "pwm_feedforward",
+            "pwm_feedforward_target",
+            "pwm_feedback",
+            "feedforward_mode",
+            "temp_rate",
+            "lead_seconds",
         ]
         
         self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=fieldnames)
@@ -618,6 +743,13 @@ class DataLogger:
         mode: str,
         room_temp: Optional[float] = None,
         humidity: Optional[float] = None,
+        error: Optional[float] = None,
+        pwm_feedforward: float = 0.0,
+        pwm_feedforward_target: float = 0.0,
+        pwm_feedback: float = 0.0,
+        feedforward_mode: Optional[str] = None,
+        temp_rate: Optional[float] = None,
+        lead_seconds: Optional[float] = None,
     ) -> None:
         """Log data point to CSV.
         
@@ -641,7 +773,13 @@ class DataLogger:
                 "mode": mode,
                 "room_temp": f"{room_temp:.2f}" if room_temp is not None else "",
                 "humidity": f"{humidity:.2f}" if humidity is not None else "",
-                "error": "",
+                "error": f"{error:.3f}" if error is not None else "",
+                "pwm_feedforward": f"{pwm_feedforward:.4f}",
+                "pwm_feedforward_target": f"{pwm_feedforward_target:.4f}",
+                "pwm_feedback": f"{pwm_feedback:.4f}",
+                "feedforward_mode": feedforward_mode or "",
+                "temp_rate": f"{temp_rate:.5f}" if temp_rate is not None else "",
+                "lead_seconds": f"{lead_seconds:.3f}" if lead_seconds is not None else "",
             }
             
             try:
@@ -662,6 +800,136 @@ class DataLogger:
 
 
 # ============================================================================
+# Feed-forward Heat Loss Estimator
+# ============================================================================
+
+class HeatLossEstimator:
+    """Estimate steady-state PWM needed to offset heat loss."""
+
+    def __init__(
+        self,
+        alpha: float = 0.08,
+        min_delta: float = 0.2,
+        min_pwm: float = 0.005,
+        steady_error: float = 0.05,
+        steady_rate: float = 0.015,
+        max_gain: float = 5.0,
+        gain_heating: float = 0.0,
+        gain_cooling: float = 0.0,
+    ) -> None:
+        self.alpha = float(alpha)
+        self.min_delta = float(min_delta)
+        self.min_pwm = float(min_pwm)
+        self.steady_error = float(steady_error)
+        self.steady_rate = float(steady_rate)
+        self.max_gain = float(max_gain)
+        self.gain_heating = max(0.0, float(gain_heating))
+        self.gain_cooling = max(0.0, float(gain_cooling))
+        self._lock = threading.Lock()
+
+    def reset(self) -> None:
+        with self._lock:
+            self.gain_heating = 0.0
+            self.gain_cooling = 0.0
+
+    def _smooth_update(self, current: float, new: float) -> float:
+        if current == 0.0:
+            return new
+        return (1.0 - self.alpha) * current + self.alpha * new
+
+    def update(
+        self,
+        mode: Optional[str],
+        pwm: float,
+        setpoint: Optional[float],
+        room_temp: Optional[float],
+        error: Optional[float],
+        temp_rate: Optional[float],
+    ) -> None:
+        if mode not in ("HEATING", "COOLING"):
+            return
+        if setpoint is None or room_temp is None:
+            return
+        if pwm < self.min_pwm:
+            return
+        if error is None or abs(error) > self.steady_error:
+            return
+        if temp_rate is not None and abs(temp_rate) > self.steady_rate:
+            return
+
+        with self._lock:
+            if mode == "HEATING":
+                delta = setpoint - room_temp
+                if delta <= self.min_delta:
+                    return
+                gain = min(self.max_gain, pwm / delta)
+                self.gain_heating = self._smooth_update(self.gain_heating, gain)
+            else:
+                delta = room_temp - setpoint
+                if delta <= self.min_delta:
+                    return
+                gain = min(self.max_gain, pwm / delta)
+                self.gain_cooling = self._smooth_update(self.gain_cooling, gain)
+
+    def predict(
+        self,
+        setpoint: Optional[float],
+        room_temp: Optional[float],
+        heating_cap: float,
+        cooling_cap: float,
+        tolerance: float,
+    ) -> Tuple[Optional[str], float]:
+        if setpoint is None or room_temp is None:
+            return None, 0.0
+        delta = setpoint - room_temp
+        with self._lock:
+            if delta > tolerance and self.gain_heating > 0.0:
+                pwm = min(heating_cap, max(0.0, self.gain_heating * delta))
+                return "HEATING", pwm
+            if delta < -tolerance and self.gain_cooling > 0.0:
+                pwm = min(cooling_cap, max(0.0, self.gain_cooling * (-delta)))
+                return "COOLING", pwm
+        return None, 0.0
+
+    def configure(self, **kwargs: float) -> Dict[str, float]:
+        with self._lock:
+            for key, value in kwargs.items():
+                if not hasattr(self, key):
+                    continue
+                numeric = float(value)
+                if key == "alpha":
+                    numeric = max(0.0, min(1.0, numeric))
+                elif key in ("min_delta", "min_pwm", "steady_error", "steady_rate", "max_gain"):
+                    numeric = max(0.0, numeric)
+                setattr(self, key, numeric)
+        return self.get_params()
+
+    def set_gains(
+        self,
+        gain_heating: Optional[float] = None,
+        gain_cooling: Optional[float] = None,
+    ) -> None:
+        with self._lock:
+            if gain_heating is not None:
+                self.gain_heating = max(0.0, float(gain_heating))
+            if gain_cooling is not None:
+                self.gain_cooling = max(0.0, float(gain_cooling))
+
+    def get_params(self) -> Dict[str, float]:
+        with self._lock:
+            return {
+                "alpha": self.alpha,
+                "min_delta": self.min_delta,
+                "min_pwm": self.min_pwm,
+                "steady_error": self.steady_error,
+                "steady_rate": self.steady_rate,
+                "max_gain": self.max_gain,
+                "gain_heating": self.gain_heating,
+                "gain_cooling": self.gain_cooling,
+            }
+
+
+# ============================================================================
 # Temperature Controller (Main Control Loop)
 # ============================================================================
 
@@ -674,10 +942,30 @@ class TemperatureController:
         telemetry_url: str,
         log_dir: Path,
         setpoint: float = 25.0,
-        kp: float = 0.05,
-        ki: float = 0.01,
-        deadband: float = 0.1,
+        kp: float = 0.045,
+        ki: float = 0.0045,
+        kp_heating: Optional[float] = 0.038,
+        ki_heating: Optional[float] = 0.0035,
+        kp_cooling: Optional[float] = 0.055,
+        ki_cooling: Optional[float] = 0.0055,
+        deadband: float = 0.15,
         control_interval: float = 1.0,
+        mode_switch_delay: float = 18.0,
+        heating_pwm_cap: Optional[float] = 0.2,
+        pwm_max: float = 0.4,
+        feedforward_enabled: bool = True,
+        feedforward_tolerance: float = 0.25,
+        feedforward_alpha: float = 0.1,
+        feedforward_min_delta: float = 0.3,
+        feedforward_min_pwm: float = 0.01,
+        feedforward_steady_error: float = 0.25,
+        feedforward_steady_rate: float = 0.02,
+        feedforward_max_gain: float = 6.0,
+        feedforward_gain_heating: float = 0.44,
+        feedforward_gain_cooling: float = 0.4,
+        lead_time_heating: float = 3.5,
+        lead_time_cooling: float = 5.0,
+        ma_window: int = 30,
     ):
         """Initialize temperature controller.
         
@@ -701,10 +989,15 @@ class TemperatureController:
             setpoint=setpoint,
             kp=kp,
             ki=ki,
+            kp_heating=kp_heating,
+            ki_heating=ki_heating,
+            kp_cooling=kp_cooling,
+            ki_cooling=ki_cooling,
             deadband=deadband,
             pwm_min=0.0,
-            pwm_max=0.4,
-            mode_switch_delay=10.0,
+            pwm_max=pwm_max,
+            mode_switch_delay=mode_switch_delay,
+            heating_pwm_cap=heating_pwm_cap,
         )
         
         self.arduino = ArduinoController(port=arduino_port)
@@ -721,8 +1014,29 @@ class TemperatureController:
         self.buffer_lock = threading.Lock()
 
         # Moving average smoothing for objective temperature
-        self.ma_window: int = 1  # 1 = no smoothing
+        self.ma_window: int = max(1, int(ma_window))
         self._ma_buffer: deque = deque(maxlen=self.ma_window)
+
+        # Feed-forward and predictive settings
+        self.feedforward = HeatLossEstimator(
+            alpha=feedforward_alpha,
+            min_delta=feedforward_min_delta,
+            min_pwm=feedforward_min_pwm,
+            steady_error=feedforward_steady_error,
+            steady_rate=feedforward_steady_rate,
+            max_gain=feedforward_max_gain,
+            gain_heating=feedforward_gain_heating,
+            gain_cooling=feedforward_gain_cooling,
+        )
+        self.feedforward_enabled = bool(feedforward_enabled)
+        self.feedforward_tolerance = max(0.0, float(feedforward_tolerance))
+        self.lead_time_heating = max(0.0, float(lead_time_heating))
+        self.lead_time_cooling = max(0.0, float(lead_time_cooling))
+        self._last_temp_value: Optional[float] = None
+        self._last_temp_time: Optional[float] = None
+
+        # Protect shared configuration accessed by HTTP/UI threads
+        self._config_lock = threading.Lock()
 
     def set_ma_window(self, window: int) -> None:
         """Set moving average window (number of samples). 1 disables smoothing."""
@@ -800,39 +1114,119 @@ class TemperatureController:
                 # 3. Get setpoint (always available)
                 setpoint = self.pi_controller.get_setpoint()
                 
-                # 4. Initialize default values
-                pwm = 0.0
+                # 4. Initialize control state
+                pwm_total = 0.0
                 mode = "OFF"
-                
-                # 5. Check if PID control is enabled
-                if self.pid_enabled and obj_temp is not None:
-                    # Compute PI control only if enabled
-                    pwm, mode = self.pi_controller.compute(obj_temp)
+                pwm_feedback = 0.0
+                pwm_ff = 0.0
+                baseline_used = 0.0
+                ff_mode: Optional[str] = None
+
+                # 5. Snapshot configurable parameters for this iteration
+                with self._config_lock:
+                    ff_enabled = self.feedforward_enabled
+                    ff_tolerance = self.feedforward_tolerance
+                    lead_heat = self.lead_time_heating
+                    lead_cool = self.lead_time_cooling
+
+                # 6. Estimate temperature rate of change
+                temp_rate: Optional[float] = None
+                if obj_temp is not None:
+                    if self._last_temp_time is not None and self._last_temp_value is not None:
+                        dt_temp = max(0.0, loop_start - self._last_temp_time)
+                        if dt_temp > 0:
+                            temp_rate = (obj_temp - self._last_temp_value) / dt_temp
+                    self._last_temp_value = obj_temp
+                    self._last_temp_time = loop_start
+
+                # 7. Predict steady-state feed-forward contribution
+                if ff_enabled and room_temp is not None:
+                    ff_mode, pwm_ff = self.feedforward.predict(
+                        setpoint=setpoint,
+                        room_temp=room_temp,
+                        heating_cap=self.pi_controller.get_heating_pwm_cap(),
+                        cooling_cap=self.pi_controller.get_pwm_max(),
+                        tolerance=ff_tolerance,
+                    )
+
+                # 8. Apply predictive lead compensation for measurement lag
+                effective_temp = obj_temp
+                lead_applied = 0.0
+                if obj_temp is not None and temp_rate is not None:
+                    lead_seconds = lead_heat if setpoint >= obj_temp else lead_cool
+                    if lead_seconds > 0.0:
+                        effective_temp = obj_temp + temp_rate * lead_seconds
+                        lead_applied = lead_seconds
+
+                # 9. Run PI controller with feed-forward baseline
+                if self.pid_enabled and effective_temp is not None:
+                    pwm_total, mode = self.pi_controller.compute(
+                        current_temp=effective_temp,
+                        baseline_pwm=pwm_ff,
+                        baseline_mode=ff_mode,
+                    )
+
+                    if mode in ("HEATING", "COOLING"):
+                        pwm_limit_active = (
+                            self.pi_controller.get_heating_pwm_cap()
+                            if mode == "HEATING"
+                            else self.pi_controller.get_pwm_max()
+                        )
+                        if ff_mode == mode:
+                            baseline_used = min(pwm_ff, pwm_limit_active)
                     
-                    # 6. Send commands to Arduino (only if connected)
                     if self.arduino.serial and self.arduino.serial.is_open:
-                        success = self.arduino.set_mode(mode, pwm)
-                        if not success:
+                        if not self.arduino.set_mode(mode, pwm_total):
                             logger.warning("Failed to set Arduino mode/PWM")
                     else:
                         logger.debug("Arduino not connected, skipping control output")
                 elif not self.pid_enabled:
-                    # PID disabled - keep PWM at 0
+                    # PID disabled - hold outputs off
                     mode = "STANDBY"
                     if self.arduino.serial and self.arduino.serial.is_open:
                         self.arduino.set_mode("OFF", 0.0)
                     logger.debug("PID control disabled - PWM held at 0.0")
                 else:
                     logger.warning("No objective temperature available - displaying ambient data only")
+                    if ff_enabled and ff_mode in ("HEATING", "COOLING"):
+                        if self.arduino.serial and self.arduino.serial.is_open:
+                            if self.arduino.set_mode(ff_mode, pwm_ff):
+                                pwm_total = pwm_ff
+                                baseline_used = pwm_ff
+                                mode = ff_mode
+                            else:
+                                logger.warning("Failed to apply feed-forward only command")
+
+                if ff_mode != mode:
+                    baseline_used = 0.0
+                pwm_feedback = max(0.0, pwm_total - baseline_used)
+                error_value = setpoint - obj_temp if obj_temp is not None else None
+
+                if ff_enabled:
+                    self.feedforward.update(
+                        mode=mode if mode in ("HEATING", "COOLING") else None,
+                        pwm=pwm_total,
+                        setpoint=setpoint,
+                        room_temp=room_temp,
+                        error=error_value,
+                        temp_rate=temp_rate,
+                    )
                 
                 # 7. Log data (even if obj_temp is None)
                 self.logger.log_data(
                     objective_temp=obj_temp,
                     setpoint=setpoint,
-                    pwm=pwm,
+                    pwm=pwm_total,
                     mode=mode,
                     room_temp=room_temp,
                     humidity=humidity,
+                    error=error_value,
+                    pwm_feedforward=baseline_used,
+                    pwm_feedforward_target=pwm_ff,
+                    pwm_feedback=pwm_feedback,
+                    feedforward_mode=ff_mode if baseline_used > 0 else None,
+                    temp_rate=temp_rate,
+                    lead_seconds=lead_applied if lead_applied > 0 else None,
                 )
                 
                 # 8. Update data buffer for GUI (ALWAYS update so GUI shows something)
@@ -840,10 +1234,17 @@ class TemperatureController:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "objective_temp": obj_temp,
                     "setpoint": setpoint,
-                    "pwm": pwm,
+                    "pwm": pwm_total,
                     "mode": mode,
                     "room_temp": room_temp,
                     "humidity": humidity,
+                    "pwm_feedforward": baseline_used,
+                    "pwm_feedforward_target": pwm_ff,
+                    "pwm_feedback": pwm_feedback,
+                    "feedforward_mode": ff_mode if baseline_used > 0 else None,
+                    "temp_rate": temp_rate,
+                    "error": error_value,
+                    "lead_seconds": lead_applied,
                 }
                 
                 with self.buffer_lock:
@@ -851,10 +1252,11 @@ class TemperatureController:
                 
                 # 9. Log status
                 logger.info(
-                    "T_obj=%s, Setpoint=%.2f°C, PWM=%.3f, Mode=%s, T_room=%s, RH=%s",
+                    "T_obj=%s, Setpoint=%.2f°C, PWM=%.3f, FF=%.3f, Mode=%s, T_room=%s, RH=%s",
                     f"{obj_temp:.2f}°C" if obj_temp is not None else "N/A",
                     setpoint,
-                    pwm,
+                    pwm_total,
+                    baseline_used,
                     mode,
                     f"{room_temp:.2f}°C" if room_temp is not None else "N/A",
                     f"{humidity:.1f}%%" if humidity is not None else "N/A",
@@ -876,6 +1278,13 @@ class TemperatureController:
                     "mode": "ERROR",
                     "room_temp": None,
                     "humidity": None,
+                    "pwm_feedforward": 0.0,
+                    "pwm_feedforward_target": 0.0,
+                    "pwm_feedback": 0.0,
+                    "feedforward_mode": None,
+                    "temp_rate": None,
+                    "error": None,
+                    "lead_seconds": 0.0,
                 }
                 with self.buffer_lock:
                     self.data_buffer.append(error_data_point)
@@ -900,6 +1309,55 @@ class TemperatureController:
         """Get current control interval."""
         return self.control_interval
     
+    def set_feedforward_enabled(self, enabled: bool) -> None:
+        with self._config_lock:
+            self.feedforward_enabled = bool(enabled)
+        logger.info("Feed-forward %s", "ENABLED" if enabled else "DISABLED")
+
+    def set_feedforward_tolerance(self, tolerance: float) -> None:
+        tol = max(0.0, float(tolerance))
+        with self._config_lock:
+            self.feedforward_tolerance = tol
+        logger.info("Feed-forward tolerance set to %.3f°C", tol)
+
+    def set_lead_times(
+        self,
+        heating: Optional[float] = None,
+        cooling: Optional[float] = None,
+    ) -> None:
+        with self._config_lock:
+            if heating is not None:
+                self.lead_time_heating = max(0.0, float(heating))
+            if cooling is not None:
+                self.lead_time_cooling = max(0.0, float(cooling))
+        logger.info(
+            "Predictive lead times set to heating=%.2fs cooling=%.2fs",
+            self.lead_time_heating,
+            self.lead_time_cooling,
+        )
+
+    def configure_feedforward(self, **kwargs: float) -> Dict[str, float]:
+        params = self.feedforward.configure(**kwargs)
+        logger.info("Feed-forward estimator parameters updated")
+        return params
+
+    def set_feedforward_gains(
+        self,
+        gain_heating: Optional[float] = None,
+        gain_cooling: Optional[float] = None,
+    ) -> None:
+        self.feedforward.set_gains(gain_heating=gain_heating, gain_cooling=gain_cooling)
+        params = self.feedforward.get_params()
+        logger.info(
+            "Feed-forward gains set to heating=%.4f cooling=%.4f",
+            params["gain_heating"],
+            params["gain_cooling"],
+        )
+
+    def reset_feedforward(self) -> None:
+        self.feedforward.reset()
+        logger.info("Feed-forward estimator reset")
+
     def enable_pid(self) -> None:
         """Enable PID control."""
         self.pid_enabled = True
@@ -919,17 +1377,32 @@ class TemperatureController:
     
     def get_controller_params(self) -> Dict[str, Any]:
         """Get all controller parameters."""
+        with self._config_lock:
+            ff_enabled = self.feedforward_enabled
+            ff_tolerance = self.feedforward_tolerance
+            lead_heat = self.lead_time_heating
+            lead_cool = self.lead_time_cooling
         return {
             "setpoint": self.pi_controller.get_setpoint(),
             "kp": self.pi_controller.get_kp(),
             "ki": self.pi_controller.get_ki(),
+            "kp_heating": self.pi_controller.get_kp_heating(),
+            "kp_cooling": self.pi_controller.get_kp_cooling(),
+            "ki_heating": self.pi_controller.get_ki_heating(),
+            "ki_cooling": self.pi_controller.get_ki_cooling(),
             "deadband": self.pi_controller.get_deadband(),
             "mode_switch_delay": self.pi_controller.get_mode_switch_delay(),
             "heating_pwm_cap": self.pi_controller.get_heating_pwm_cap(),
+            "pwm_max": self.pi_controller.get_pwm_max(),
             "control_interval": self.control_interval,
             "pid_enabled": self.pid_enabled,
             "ma_window": self.get_ma_window(),
             "invert_direction": self.arduino.get_invert_direction() if self.arduino else False,
+            "feedforward_enabled": ff_enabled,
+            "feedforward_tolerance": ff_tolerance,
+            "feedforward": self.feedforward.get_params(),
+            "lead_time_heating": lead_heat,
+            "lead_time_cooling": lead_cool,
         }
     
     def get_current_data(self) -> Dict[str, Any]:
@@ -947,6 +1420,13 @@ class TemperatureController:
                     "mode": "OFF",
                     "room_temp": None,
                     "humidity": None,
+                    "pwm_feedforward": 0.0,
+                    "pwm_feedforward_target": 0.0,
+                    "pwm_feedback": 0.0,
+                    "feedforward_mode": None,
+                    "temp_rate": None,
+                    "error": None,
+                    "lead_seconds": 0.0,
                 }
             
             # Add PID enabled status
@@ -979,6 +1459,13 @@ class TemperatureController:
                                 "mode": row.get("mode", "OFF"),
                                 "room_temp": float(row["room_temp"]) if row.get("room_temp") else None,
                                 "humidity": float(row["humidity"]) if row.get("humidity") else None,
+                                "pwm_feedforward": float(row["pwm_feedforward"]) if row.get("pwm_feedforward") else 0.0,
+                                "pwm_feedforward_target": float(row["pwm_feedforward_target"]) if row.get("pwm_feedforward_target") else 0.0,
+                                "pwm_feedback": float(row["pwm_feedback"]) if row.get("pwm_feedback") else 0.0,
+                                "feedforward_mode": row.get("feedforward_mode") or None,
+                                "temp_rate": float(row["temp_rate"]) if row.get("temp_rate") else None,
+                                "error": float(row["error"]) if row.get("error") else None,
+                                "lead_seconds": float(row["lead_seconds"]) if row.get("lead_seconds") else None,
                             }
                             all_data.append(data_point)
                 
@@ -1131,11 +1618,27 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 new_kp = float(params["kp"][0])
                 self.controller.pi_controller.set_kp(new_kp)
                 updated["kp"] = new_kp
+            if "kp_heating" in params:
+                new_kph = float(params["kp_heating"][0])
+                self.controller.pi_controller.set_kp_heating(new_kph)
+                updated["kp_heating"] = new_kph
+            if "kp_cooling" in params:
+                new_kpc = float(params["kp_cooling"][0])
+                self.controller.pi_controller.set_kp_cooling(new_kpc)
+                updated["kp_cooling"] = new_kpc
             
             if "ki" in params:
                 new_ki = float(params["ki"][0])
                 self.controller.pi_controller.set_ki(new_ki)
                 updated["ki"] = new_ki
+            if "ki_heating" in params:
+                new_kih = float(params["ki_heating"][0])
+                self.controller.pi_controller.set_ki_heating(new_kih)
+                updated["ki_heating"] = new_kih
+            if "ki_cooling" in params:
+                new_kic = float(params["ki_cooling"][0])
+                self.controller.pi_controller.set_ki_cooling(new_kic)
+                updated["ki_cooling"] = new_kic
             
             if "deadband" in params:
                 new_deadband = float(params["deadband"][0])
@@ -1161,6 +1664,59 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 new_ma = int(params["ma_window"][0])
                 self.controller.set_ma_window(new_ma)
                 updated["ma_window"] = new_ma
+
+            if "feedforward_enabled" in params:
+                ff_flag = params["feedforward_enabled"][0].strip().lower()
+                ff_enabled = ff_flag in ("1", "true", "yes", "on")
+                self.controller.set_feedforward_enabled(ff_enabled)
+                updated["feedforward_enabled"] = ff_enabled
+
+            ff_config_updates: Dict[str, float] = {}
+            for key in (
+                "feedforward_alpha",
+                "feedforward_min_delta",
+                "feedforward_min_pwm",
+                "feedforward_steady_error",
+                "feedforward_steady_rate",
+                "feedforward_max_gain",
+            ):
+                if key in params:
+                    value = float(params[key][0])
+                    ff_config_updates[key.replace("feedforward_", "")] = value
+                    updated[key] = value
+            if ff_config_updates:
+                self.controller.configure_feedforward(**ff_config_updates)
+
+            if "feedforward_tolerance" in params:
+                tol = float(params["feedforward_tolerance"][0])
+                self.controller.set_feedforward_tolerance(tol)
+                updated["feedforward_tolerance"] = tol
+
+            gain_heating = gain_cooling = None
+            if "feedforward_gain_heating" in params:
+                gain_heating = float(params["feedforward_gain_heating"][0])
+                updated["feedforward_gain_heating"] = gain_heating
+            if "feedforward_gain_cooling" in params:
+                gain_cooling = float(params["feedforward_gain_cooling"][0])
+                updated["feedforward_gain_cooling"] = gain_cooling
+            if gain_heating is not None or gain_cooling is not None:
+                self.controller.set_feedforward_gains(gain_heating=gain_heating, gain_cooling=gain_cooling)
+
+            if "feedforward_reset" in params:
+                reset_flag = params["feedforward_reset"][0].strip().lower()
+                if reset_flag in ("1", "true", "yes", "on"):
+                    self.controller.reset_feedforward()
+                    updated["feedforward_reset"] = True
+
+            lead_heating = lead_cooling = None
+            if "lead_time_heating" in params:
+                lead_heating = float(params["lead_time_heating"][0])
+                updated["lead_time_heating"] = lead_heating
+            if "lead_time_cooling" in params:
+                lead_cooling = float(params["lead_time_cooling"][0])
+                updated["lead_time_cooling"] = lead_cooling
+            if lead_heating is not None or lead_cooling is not None:
+                self.controller.set_lead_times(heating=lead_heating, cooling=lead_cooling)
 
             if "invert_direction" in params:
                 inv_str = params["invert_direction"][0].strip().lower()
@@ -1373,6 +1929,30 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
         .control-group button:active {
             transform: translateY(0);
         }
+
+        .control-section {
+            margin-top: 25px;
+            padding-top: 20px;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .control-heading {
+            margin-bottom: 10px;
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #444;
+        }
+
+        .control-hint {
+            font-size: 0.85em;
+            color: #777;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
         
         .charts {
             padding: 30px;
@@ -1444,6 +2024,26 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 <h3>PWM Output</h3>
                 <div class="value" id="pwm">--</div>
             </div>
+            <div class="status-item">
+                <h3>Feed-forward PWM</h3>
+                <div class="value" id="pwm-feedforward">--</div>
+            </div>
+            <div class="status-item">
+                <h3>PI Residual PWM</h3>
+                <div class="value" id="pwm-feedback">--</div>
+            </div>
+            <div class="status-item">
+                <h3>Feed-forward Mode</h3>
+                <div class="value" id="ff-mode">--</div>
+            </div>
+            <div class="status-item">
+                <h3>Temperature Rate</h3>
+                <div class="value" id="temp-rate">--</div>
+            </div>
+            <div class="status-item">
+                <h3>Lead Compensation</h3>
+                <div class="value" id="lead-seconds">--</div>
+            </div>
         </div>
         
         <div class="controls">
@@ -1456,37 +2056,104 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             
             <div class="control-group">
                 <label for="setpoint-input">Set Temperature:</label>
-                <input type="number" id="setpoint-input" step="0.1" min="15" max="35" value="25.0">
+                <input type="number" id="setpoint-input" step="0.1" min="18" max="35" value="25.0">
                 <span class="unit">°C</span>
                 <button onclick="updateSetpoint()">Update Setpoint</button>
             </div>
             
             <div class="control-group" style="margin-top: 15px;">
                 <label for="kp-input">Kp (Proportional):</label>
-                <input type="number" id="kp-input" step="0.001" min="0" max="1" value="0.05">
+                <input type="number" id="kp-input" step="0.001" min="0" max="1" value="0.045">
                 
                 <label for="ki-input" style="margin-left: 20px;">Ki (Integral):</label>
-                <input type="number" id="ki-input" step="any" min="0" max="1" value="0.01">
+                <input type="number" id="ki-input" step="any" min="0" max="1" value="0.0045">
                 
                 <label for="interval-input" style="margin-left: 20px;">Interval (s):</label>
                 <input type="number" id="interval-input" step="0.1" min="0.1" max="10" value="1.0">
                 
                 <label for="deadband-input" style="margin-left: 20px;">Deadband (°C):</label>
-                <input type="number" id="deadband-input" step="0.05" min="0" max="2" value="0.1">
+                <input type="number" id="deadband-input" step="0.05" min="0" max="2" value="0.15">
 
                 <label for="mode-delay-input" style="margin-left: 20px;">Mode Delay (s):</label>
-                <input type="number" id="mode-delay-input" step="1" min="0" max="120" value="10">
+                <input type="number" id="mode-delay-input" step="1" min="0" max="120" value="18">
 
                 <label for="ma-window-input" style="margin-left: 20px;">MA Window (samples):</label>
-                <input type="number" id="ma-window-input" step="1" min="1" max="600" value="1">
+                <input type="number" id="ma-window-input" step="1" min="1" max="600" value="30">
 
                 <label for="heating-cap-input" style="margin-left: 20px;">Heating PWM Cap:</label>
-                <input type="number" id="heating-cap-input" step="0.01" min="0" max="0.4" placeholder="0.20">
+                <input type="number" id="heating-cap-input" step="0.01" min="0" max="0.4" value="0.20">
 
                 <label for="invert-dir-input" style="margin-left: 20px;">Invert Direction:</label>
                 <input type="checkbox" id="invert-dir-input">
-                
+            </div>
+
+            <div class="control-section">
+                <h3 class="control-heading">Per-Mode PI Gains</h3>
+                <div class="control-group">
+                    <label for="kp-heating-input">Kp Heating:</label>
+                    <input type="number" id="kp-heating-input" step="0.001" min="0" max="1" value="0.038">
+
+                    <label for="kp-cooling-input" style="margin-left: 20px;">Kp Cooling:</label>
+                    <input type="number" id="kp-cooling-input" step="0.001" min="0" max="1" value="0.055">
+
+                    <label for="ki-heating-input" style="margin-left: 20px;">Ki Heating:</label>
+                    <input type="number" id="ki-heating-input" step="any" min="0" max="1" value="0.0035">
+
+                    <label for="ki-cooling-input" style="margin-left: 20px;">Ki Cooling:</label>
+                    <input type="number" id="ki-cooling-input" step="any" min="0" max="1" value="0.0055">
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h3 class="control-heading">Feed-forward Compensation</h3>
+                <div class="control-group checkbox-group">
+                    <label for="feedforward-enabled-input">Enable Feed-forward:</label>
+                    <input type="checkbox" id="feedforward-enabled-input" checked>
+                    <span class="control-hint">Learns steady-state heat loss and pre-loads PWM.</span>
+                </div>
+                <div class="control-group" style="margin-top: 10px;">
+                    <label for="feedforward-tolerance-input">Tolerance (°C):</label>
+                    <input type="number" id="feedforward-tolerance-input" step="0.01" min="0" max="5" value="0.25">
+
+                    <label for="feedforward-alpha-input" style="margin-left: 20px;">Learning α:</label>
+                    <input type="number" id="feedforward-alpha-input" step="0.01" min="0" max="1" value="0.10">
+
+                    <label for="feedforward-min-delta-input" style="margin-left: 20px;">Min ΔT (°C):</label>
+                    <input type="number" id="feedforward-min-delta-input" step="0.05" min="0" max="10" value="0.30">
+
+                    <label for="feedforward-min-pwm-input" style="margin-left: 20px;">Min PWM:</label>
+                    <input type="number" id="feedforward-min-pwm-input" step="0.001" min="0" max="1" value="0.010">
+                </div>
+                <div class="control-group" style="margin-top: 10px;">
+                    <label for="feedforward-steady-error-input">Steady Error (°C):</label>
+                    <input type="number" id="feedforward-steady-error-input" step="0.01" min="0" max="2" value="0.25">
+
+                    <label for="feedforward-steady-rate-input" style="margin-left: 20px;">Steady Rate (°C/s):</label>
+                    <input type="number" id="feedforward-steady-rate-input" step="0.001" min="0" max="1" value="0.020">
+
+                    <label for="feedforward-max-gain-input" style="margin-left: 20px;">Max Gain:</label>
+                    <input type="number" id="feedforward-max-gain-input" step="0.1" min="0" max="50" value="6.0">
+
+                    <label for="feedforward-gain-heating-input" style="margin-left: 20px;">Manual Gain Heating:</label>
+                    <input type="number" id="feedforward-gain-heating-input" step="0.001" min="0" max="50" value="0.44">
+
+                    <label for="feedforward-gain-cooling-input" style="margin-left: 20px;">Manual Gain Cooling:</label>
+                    <input type="number" id="feedforward-gain-cooling-input" step="0.001" min="0" max="50" value="0.40">
+                </div>
+
+                <div class="control-group" style="margin-top: 10px;">
+                    <label for="lead-time-heating-input">Lead Time Heating (s):</label>
+                    <input type="number" id="lead-time-heating-input" step="0.1" min="0" max="60" value="3.5">
+
+                    <label for="lead-time-cooling-input" style="margin-left: 20px;">Lead Time Cooling (s):</label>
+                    <input type="number" id="lead-time-cooling-input" step="0.1" min="0" max="60" value="5.0">
+                    <span class="control-hint">Predicts temperature by extrapolating current rate.</span>
+                </div>
+            </div>
+
+            <div class="control-group" style="margin-top: 20px; gap: 20px;">
                 <button onclick="updateParams()">Update Parameters</button>
+                <button onclick="resetFeedforward()" style="background: linear-gradient(135deg, #ff6b6b 0%, #ff4d4f 100%);">Reset Feed-forward Learning</button>
             </div>
         </div>
         
@@ -1582,10 +2249,28 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 data: {
                     datasets: [
                         {
-                            label: 'PWM Output',
+                            label: 'PWM Total',
                             data: [],
                             borderColor: '#4ecdc4',
                             backgroundColor: 'rgba(78,205,196,0.1)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'Feed-forward PWM',
+                            data: [],
+                            borderColor: '#ffa94d',
+                            backgroundColor: 'rgba(255,169,77,0.15)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'PI Residual PWM',
+                            data: [],
+                            borderColor: '#845ef7',
+                            backgroundColor: 'rgba(132,94,247,0.15)',
                             borderWidth: 2,
                             pointRadius: 0,
                             yAxisID: 'y',
@@ -1672,11 +2357,29 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                     data.humidity !== null ? `${data.humidity.toFixed(1)}<span class="unit">%RH</span>` : '--';
                 
                 const modeElement = document.getElementById('mode');
-                modeElement.textContent = data.mode;
-                modeElement.className = 'value mode-' + data.mode.toLowerCase();
+                const modeClass = data.mode ? `mode-${data.mode.toLowerCase()}` : '';
+                modeElement.textContent = data.mode || '--';
+                modeElement.className = `value ${modeClass}`.trim();
                 
+                const totalPwm = typeof data.pwm === 'number' ? data.pwm : 0;
                 document.getElementById('pwm').innerHTML = 
-                    `${data.pwm.toFixed(3)}<span class="unit"></span>`;
+                    `${totalPwm.toFixed(3)}<span class="unit"></span>`;
+
+                const ffApplied = typeof data.pwm_feedforward === 'number' ? data.pwm_feedforward : 0;
+                const piResidual = typeof data.pwm_feedback === 'number' ? data.pwm_feedback : Math.max(0, totalPwm - ffApplied);
+                document.getElementById('pwm-feedforward').innerHTML = `${ffApplied.toFixed(3)}<span class="unit"></span>`;
+                document.getElementById('pwm-feedback').innerHTML = `${piResidual.toFixed(3)}<span class="unit"></span>`;
+
+                const ffModeElement = document.getElementById('ff-mode');
+                ffModeElement.textContent = data.feedforward_mode ? data.feedforward_mode : (ffApplied > 0 ? 'ACTIVE' : '--');
+
+                const tempRateElement = document.getElementById('temp-rate');
+                const rateVal = typeof data.temp_rate === 'number' ? data.temp_rate : null;
+                tempRateElement.innerHTML = rateVal !== null ? `${rateVal.toFixed(3)}<span class="unit">°C/s</span>` : '--';
+
+                const leadElement = document.getElementById('lead-seconds');
+                const leadVal = typeof data.lead_seconds === 'number' ? data.lead_seconds : null;
+                leadElement.innerHTML = leadVal !== null && leadVal > 0 ? `${leadVal.toFixed(2)}<span class="unit">s</span>` : '--';
                 
                 document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
                 
@@ -1704,9 +2407,23 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             });
             
             // Control chart
+            const totalPwm = typeof data.pwm === 'number' ? data.pwm : 0;
+            const ffPwm = typeof data.pwm_feedforward === 'number' ? data.pwm_feedforward : 0;
+            const residualPwm = typeof data.pwm_feedback === 'number' ? data.pwm_feedback : Math.max(0, totalPwm - ffPwm);
+
             controlChart.data.datasets[0].data.push({
                 x: timestamp,
-                y: data.pwm
+                y: totalPwm
+            });
+
+            controlChart.data.datasets[1].data.push({
+                x: timestamp,
+                y: ffPwm
+            });
+
+            controlChart.data.datasets[2].data.push({
+                x: timestamp,
+                y: residualPwm
             });
             
             // Mode as numeric: HEATING=1, OFF=0, COOLING=-1
@@ -1714,7 +2431,7 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             if (data.mode === 'HEATING') modeValue = 1;
             else if (data.mode === 'COOLING') modeValue = -1;
             
-            controlChart.data.datasets[1].data.push({
+            controlChart.data.datasets[3].data.push({
                 x: timestamp,
                 y: modeValue
             });
@@ -1729,8 +2446,10 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             if (controlChart.data.datasets[0].data.length > MAX_DATA_POINTS) {
                 controlChart.data.datasets[0].data.shift();
             }
-            if (controlChart.data.datasets[1].data.length > MAX_DATA_POINTS) {
-                controlChart.data.datasets[1].data.shift();
+            for (let i = 1; i <= 3; i += 1) {
+                if (controlChart.data.datasets[i].data.length > MAX_DATA_POINTS) {
+                    controlChart.data.datasets[i].data.shift();
+                }
             }
             
             tempChart.update('none');
@@ -1740,7 +2459,7 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
         // Load historical data
         async function loadHistoricalData() {
             try {
-                const response = await fetch('/api/history');
+                const response = await fetch('/api/history', { cache: 'no-store' });
                 const data = await response.json();
                 
                 if (data.data && data.data.length > 0) {
@@ -1752,6 +2471,8 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                     tempChart.data.datasets[1].data = [];
                     controlChart.data.datasets[0].data = [];
                     controlChart.data.datasets[1].data = [];
+                    controlChart.data.datasets[2].data = [];
+                    controlChart.data.datasets[3].data = [];
                     
                     // Add historical data
                     recentData.forEach(point => {
@@ -1769,16 +2490,30 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                             y: point.setpoint
                         });
                         
+                        const totalHistoricPwm = typeof point.pwm === 'number' ? point.pwm : 0;
+                        const historicFf = typeof point.pwm_feedforward === 'number' ? point.pwm_feedforward : 0;
+                        const historicResidual = typeof point.pwm_feedback === 'number' ? point.pwm_feedback : Math.max(0, totalHistoricPwm - historicFf);
+
                         controlChart.data.datasets[0].data.push({
                             x: timestamp,
-                            y: point.pwm
+                            y: totalHistoricPwm
+                        });
+
+                        controlChart.data.datasets[1].data.push({
+                            x: timestamp,
+                            y: historicFf
+                        });
+
+                        controlChart.data.datasets[2].data.push({
+                            x: timestamp,
+                            y: historicResidual
                         });
                         
                         let modeValue = 0;
                         if (point.mode === 'HEATING') modeValue = 1;
                         else if (point.mode === 'COOLING') modeValue = -1;
                         
-                        controlChart.data.datasets[1].data.push({
+                        controlChart.data.datasets[3].data.push({
                             x: timestamp,
                             y: modeValue
                         });
@@ -1796,7 +2531,7 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
         async function fetchCurrentData() {
             try {
                 console.log('Fetching current data from /api/current...');
-                const response = await fetch('/api/current');
+                const response = await fetch('/api/current', { cache: 'no-store' });
                 console.log('Response status:', response.status);
                 
                 if (!response.ok) {
@@ -1825,7 +2560,7 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             }
             
             try {
-                const response = await fetch(`/api/setpoint?value=${value}`);
+                const response = await fetch(`/api/setpoint?value=${value}`, { cache: 'no-store' });
                 const data = await response.json();
                 
                 alert(data.message || 'Setpoint updated');
@@ -1852,6 +2587,24 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             
             try {
                 const heatingCap = parseFloat(document.getElementById('heating-cap-input')?.value || '');
+                const kpHeating = parseFloat(document.getElementById('kp-heating-input')?.value || '');
+                const kpCooling = parseFloat(document.getElementById('kp-cooling-input')?.value || '');
+                const kiHeating = parseFloat(document.getElementById('ki-heating-input')?.value || '');
+                const kiCooling = parseFloat(document.getElementById('ki-cooling-input')?.value || '');
+
+                const feedforwardEnabled = document.getElementById('feedforward-enabled-input')?.checked ?? true;
+                const ffTolerance = parseFloat(document.getElementById('feedforward-tolerance-input')?.value || '');
+                const ffAlpha = parseFloat(document.getElementById('feedforward-alpha-input')?.value || '');
+                const ffMinDelta = parseFloat(document.getElementById('feedforward-min-delta-input')?.value || '');
+                const ffMinPwm = parseFloat(document.getElementById('feedforward-min-pwm-input')?.value || '');
+                const ffSteadyError = parseFloat(document.getElementById('feedforward-steady-error-input')?.value || '');
+                const ffSteadyRate = parseFloat(document.getElementById('feedforward-steady-rate-input')?.value || '');
+                const ffMaxGain = parseFloat(document.getElementById('feedforward-max-gain-input')?.value || '');
+                const ffGainHeating = parseFloat(document.getElementById('feedforward-gain-heating-input')?.value || '');
+                const ffGainCooling = parseFloat(document.getElementById('feedforward-gain-cooling-input')?.value || '');
+                const leadHeat = parseFloat(document.getElementById('lead-time-heating-input')?.value || '');
+                const leadCool = parseFloat(document.getElementById('lead-time-cooling-input')?.value || '');
+
                 const queryParts = [
                     `kp=${kp}`,
                     `ki=${ki}`,
@@ -1862,7 +2615,24 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                     `invert_direction=${invertDir}`,
                 ];
                 if (!isNaN(heatingCap)) queryParts.push(`heating_pwm_cap=${heatingCap}`);
-                const response = await fetch(`/api/params?${queryParts.join('&')}`);
+                if (!isNaN(kpHeating)) queryParts.push(`kp_heating=${kpHeating}`);
+                if (!isNaN(kpCooling)) queryParts.push(`kp_cooling=${kpCooling}`);
+                if (!isNaN(kiHeating)) queryParts.push(`ki_heating=${kiHeating}`);
+                if (!isNaN(kiCooling)) queryParts.push(`ki_cooling=${kiCooling}`);
+
+                queryParts.push(`feedforward_enabled=${feedforwardEnabled}`);
+                if (!isNaN(ffTolerance)) queryParts.push(`feedforward_tolerance=${ffTolerance}`);
+                if (!isNaN(ffAlpha)) queryParts.push(`feedforward_alpha=${ffAlpha}`);
+                if (!isNaN(ffMinDelta)) queryParts.push(`feedforward_min_delta=${ffMinDelta}`);
+                if (!isNaN(ffMinPwm)) queryParts.push(`feedforward_min_pwm=${ffMinPwm}`);
+                if (!isNaN(ffSteadyError)) queryParts.push(`feedforward_steady_error=${ffSteadyError}`);
+                if (!isNaN(ffSteadyRate)) queryParts.push(`feedforward_steady_rate=${ffSteadyRate}`);
+                if (!isNaN(ffMaxGain)) queryParts.push(`feedforward_max_gain=${ffMaxGain}`);
+                if (!isNaN(ffGainHeating)) queryParts.push(`feedforward_gain_heating=${ffGainHeating}`);
+                if (!isNaN(ffGainCooling)) queryParts.push(`feedforward_gain_cooling=${ffGainCooling}`);
+                if (!isNaN(leadHeat)) queryParts.push(`lead_time_heating=${leadHeat}`);
+                if (!isNaN(leadCool)) queryParts.push(`lead_time_cooling=${leadCool}`);
+                const response = await fetch(`/api/params?${queryParts.join('&')}`, { cache: 'no-store' });
                 const data = await response.json();
                 
                 alert(data.message || 'Parameters updated');
@@ -1872,10 +2642,29 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             }
         }
         
+        // Reset feed-forward estimator
+        async function resetFeedforward() {
+            const confirmReset = confirm('Reset feed-forward learning and clear estimated gains?');
+            if (!confirmReset) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/params?feedforward_reset=true', { cache: 'no-store' });
+                const data = await response.json();
+
+                alert(data.message || 'Feed-forward estimator reset');
+                await loadParameters();
+            } catch (error) {
+                console.error('Error resetting feed-forward estimator:', error);
+                alert('Failed to reset feed-forward estimator');
+            }
+        }
+
         // Load current parameters
         async function loadParameters() {
             try {
-                const response = await fetch('/api/params');
+                const response = await fetch('/api/params', { cache: 'no-store' });
                 const data = await response.json();
                 
                 // Update input fields with current values
@@ -1892,6 +2681,27 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                     const el = document.getElementById('heating-cap-input');
                     if (el) el.value = data.heating_pwm_cap.toFixed(3);
                 }
+
+                if (typeof data.kp_heating === 'number') document.getElementById('kp-heating-input').value = String(data.kp_heating);
+                if (typeof data.kp_cooling === 'number') document.getElementById('kp-cooling-input').value = String(data.kp_cooling);
+                if (typeof data.ki_heating === 'number') document.getElementById('ki-heating-input').value = String(data.ki_heating);
+                if (typeof data.ki_cooling === 'number') document.getElementById('ki-cooling-input').value = String(data.ki_cooling);
+
+                document.getElementById('feedforward-enabled-input').checked = Boolean(data.feedforward_enabled);
+                if (typeof data.feedforward_tolerance === 'number') document.getElementById('feedforward-tolerance-input').value = data.feedforward_tolerance.toFixed(3);
+
+                const ff = data.feedforward || {};
+                if (typeof ff.alpha === 'number') document.getElementById('feedforward-alpha-input').value = String(ff.alpha);
+                if (typeof ff.min_delta === 'number') document.getElementById('feedforward-min-delta-input').value = String(ff.min_delta);
+                if (typeof ff.min_pwm === 'number') document.getElementById('feedforward-min-pwm-input').value = String(ff.min_pwm);
+                if (typeof ff.steady_error === 'number') document.getElementById('feedforward-steady-error-input').value = String(ff.steady_error);
+                if (typeof ff.steady_rate === 'number') document.getElementById('feedforward-steady-rate-input').value = String(ff.steady_rate);
+                if (typeof ff.max_gain === 'number') document.getElementById('feedforward-max-gain-input').value = String(ff.max_gain);
+                if (typeof ff.gain_heating === 'number') document.getElementById('feedforward-gain-heating-input').value = String(ff.gain_heating);
+                if (typeof ff.gain_cooling === 'number') document.getElementById('feedforward-gain-cooling-input').value = String(ff.gain_cooling);
+
+                if (typeof data.lead_time_heating === 'number') document.getElementById('lead-time-heating-input').value = data.lead_time_heating.toFixed(2);
+                if (typeof data.lead_time_cooling === 'number') document.getElementById('lead-time-cooling-input').value = data.lead_time_cooling.toFixed(2);
             } catch (error) {
                 console.error('Error loading parameters:', error);
             }
@@ -1900,7 +2710,7 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
         // Load PID status and update button
         async function loadPIDStatus() {
             try {
-                const response = await fetch('/api/pid/status');
+                const response = await fetch('/api/pid/status', { cache: 'no-store' });
                 const data = await response.json();
                 
                 const button = document.getElementById('pid-toggle-btn');
@@ -1927,11 +2737,11 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
         // Toggle PID control
         async function togglePID() {
             try {
-                const statusResponse = await fetch('/api/pid/status');
+                const statusResponse = await fetch('/api/pid/status', { cache: 'no-store' });
                 const statusData = await statusResponse.json();
                 
                 const endpoint = statusData.pid_enabled ? '/api/pid/disable' : '/api/pid/enable';
-                const response = await fetch(endpoint);
+                const response = await fetch(endpoint, { cache: 'no-store' });
                 const data = await response.json();
                 
                 alert(data.message || 'PID control toggled');
@@ -2045,44 +2855,44 @@ def main() -> None:
     parser.add_argument(
         "--setpoint",
         type=float,
-        default=22.0,
+        default=25.0,
         help="Initial temperature setpoint in °C (default: 25.0)",
     )
     parser.add_argument(
         "--kp",
         type=float,
-        default=0.025,
-        help="Proportional gain (default: 0.05)",
+        default=0.06,
+        help="Base proportional gain before per-mode tuning (default: 0.06)",
     )
     parser.add_argument(
         "--ki",
         type=float,
-        default=0.00015,
-        help="Integral gain (default: 0.01)",
+        default=0.0075,
+        help="Base integral gain before per-mode tuning (default: 0.0075)",
     )
     parser.add_argument(
         "--deadband",
         type=float,
-        default=0.25,
-        help="Temperature deadband ±°C (default: 0.1)",
+        default=0.12,
+        help="Temperature deadband ±°C (default: 0.12)",
     )
     parser.add_argument(
         "--mode-switch-delay",
         type=float,
-        default=20.0,
-        help="Minimum seconds between heating/cooling mode switches (default: 10.0)",
+        default=12.0,
+        help="Minimum seconds between heating/cooling mode switches (default: 12.0)",
     )
     parser.add_argument(
         "--heating-pwm-cap",
         type=float,
-        default=None,
-        help="Optional cap on PWM during HEATING (<= pwm_max, default: 50% of pwm_max)",
+        default=0.22,
+        help="Cap on PWM during HEATING (<= pwm_max, default: 0.22)",
     )
     parser.add_argument(
         "--ma-window",
         type=int,
-        default=10,
-        help="Moving average window (samples) for objective temperature (default: 1 = off)",
+        default=4,
+        help="Moving average window (samples) for objective temperature (default: 4)",
     )
     parser.add_argument(
         "--invert-direction",
@@ -2092,7 +2902,7 @@ def main() -> None:
     parser.add_argument(
         "--control-interval",
         type=float,
-        default=2.0,
+        default=1.0,
         help="Control loop interval in seconds (default: 1.0)",
     )
     parser.add_argument(
@@ -2130,12 +2940,13 @@ def main() -> None:
         ki=args.ki,
         deadband=args.deadband,
         control_interval=args.control_interval,
+        mode_switch_delay=args.mode_switch_delay,
+        heating_pwm_cap=args.heating_pwm_cap,
+        ma_window=args.ma_window,
     )
     # Apply PI extra and smoothing
-    controller.pi_controller.set_mode_switch_delay(args.mode_switch_delay)
     if args.heating_pwm_cap is not None:
         controller.pi_controller.set_heating_pwm_cap(args.heating_pwm_cap)
-    controller.set_ma_window(args.ma_window)
     controller.arduino.set_invert_direction(args.invert_direction)
     
     # Start controller

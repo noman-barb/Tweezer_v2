@@ -65,7 +65,8 @@ class TelemetryManager:
         
         try:
             logger.info("Connecting to Arduino Due gRPC server at %s", self.grpc_target)
-            self.client = DueStreamingClient(self.grpc_target, timeout=5.0)
+            # Only enable telemetry, not commands (to avoid conflicts with dashboard)
+            self.client = DueStreamingClient(self.grpc_target, timeout=5.0, enable_commands=False, enable_telemetry=True)
             
             # Set up telemetry callback
             def telemetry_callback(timestamp: str, measurements: Dict[str, Any]) -> None:
