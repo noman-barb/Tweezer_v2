@@ -16,7 +16,7 @@ controller:
   setpoint: 25.0          # Initial temperature setpoint (°C)
   kp: 0.05                # Proportional gain
   ki: 0.01                # Integral gain
-  deadband: 0.0           # Legacy field (controller now reacts continuously)
+  deadband: 0.1           # Temperature tolerance ±°C
   pwm_min: 0.0            # Minimum PWM value
   pwm_max: 0.4            # Maximum PWM value (40%)
   mode_switch_delay: 10.0 # Minimum seconds between heating/cooling switches

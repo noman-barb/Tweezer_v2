@@ -1,8 +1,9 @@
 {
-  "current_config": "tweezer_area",
+  "current_config": "twz2",
   "available_configs": [
     "slm1",
     "default",
-    "tweezer_area"
+    "tweezer_area",
+    "twz2"
   ]
 }

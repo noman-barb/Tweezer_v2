@@ -80,6 +80,11 @@ from slm_config.slm_feature_config_manager import (  # type: ignore  # noqa: E40
     SlmFeatureConfigManager,
     SlmFeatureConfig,
 )
+from slm_config.slm_finetuning_manager import (  # type: ignore  # noqa: E402
+    FineTuningManager,
+    FineTuningResult,
+    FineTuningSample,
+)
 
 # Tracking Config imports
 import sys
@@ -357,6 +362,34 @@ class SlmFeatureState:
     default_point_z: float
 
 
+@dataclass
+class FineTuningState:
+    """State for active fine-tuning session."""
+    active: bool = False
+    paused: bool = False
+    progress: float = 0.0  # 0.0 to 1.0
+    current_sample: int = 0
+    total_samples: int = 0
+    margin_pixels: float = 50.0
+    sample_area_min_x: float = 0.0
+    sample_area_min_y: float = 0.0
+    sample_area_max_x: float = 0.0
+    sample_area_max_y: float = 0.0
+    sample_points: List[Tuple[float, float]] = field(default_factory=list)  # Target SLM positions
+    matched_particles: List[Tuple[float, float]] = field(default_factory=list)  # Detected positions
+    errors: List[float] = field(default_factory=list)  # Distance errors
+    current_target: Optional[Tuple[float, float]] = None  # Current pinning target
+    current_match: Optional[Tuple[float, float]] = None  # Current matched particle
+    animation_phase: float = 0.0  # For pulsing animations (0-1)
+    base_config_name: str = ""
+    show_visualization: bool = True
+    base_affine_params: Dict[str, float] = field(default_factory=dict)
+    current_track_history: List[Tuple[float, float]] = field(default_factory=list)
+    manual_sample_points: List[Tuple[float, float]] = field(default_factory=list)
+    manual_matched_particles: List[Tuple[float, float]] = field(default_factory=list)
+    manual_errors: List[float] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class EndpointConfig:
     host: str
@@ -532,6 +565,23 @@ class AggregateUI:
     ui_config_load_button: Optional[int] = None
     ui_config_set_default_button: Optional[int] = None
     ui_config_delete_button: Optional[int] = None
+    # Fine-tuning controls
+    finetuning_start_button: Optional[int] = None
+    finetuning_stop_button: Optional[int] = None
+    finetuning_pause_button: Optional[int] = None
+    finetuning_progress_bar: Optional[int] = None
+    finetuning_status_text: Optional[int] = None
+    finetuning_margin_input: Optional[int] = None
+    finetuning_samples_input: Optional[int] = None
+    finetuning_visualization_checkbox: Optional[int] = None
+    finetuning_config_combo: Optional[int] = None
+    finetuning_config_delete_button: Optional[int] = None
+    finetuning_metadata_text: Optional[int] = None
+    manual_sample_count_text: Optional[int] = None
+    manual_status_text: Optional[int] = None
+    manual_capture_button: Optional[int] = None
+    manual_apply_button: Optional[int] = None
+    manual_clear_button: Optional[int] = None
     # Window tags for layout management
     connection_window: Optional[int] = None
     ui_config_window: Optional[int] = None
@@ -1144,10 +1194,20 @@ class AggregateControllerStreaming:
         
         # Experiment params manager
         self.experiment_params_manager = ExperimentParamsManager(scripts_dir)
+        
+        # Fine-tuning manager and state
+        slm_config_dir = self.slm_config_manager.config_dir
+        self.finetuning_manager = FineTuningManager(slm_config_dir)
+        self.finetuning_state = FineTuningState()
+        self.finetuning_thread: Optional[threading.Thread] = None
+        self.manual_calibration_samples: List[FineTuningSample] = []
+        self.manual_calibration_lock = threading.Lock()
 
     def set_ui(self, ui: AggregateUI) -> None:
         self.ui = ui
         self._update_feature_controls_ui()
+        self._update_manual_calibration_ui()
+        self._set_manual_status("Capture manual samples to augment auto-tuning", TEXT_SECONDARY)
 
     # Image bit depth management
     
@@ -2257,6 +2317,9 @@ class AggregateControllerStreaming:
             # Update experiment script status display
             self._update_experiment_script_status()
             
+            # Update fine-tuning UI
+            self._update_finetuning_display()
+            
         except Exception as exc:
             logging.exception("Error in update loop: %s", exc)
 
@@ -2328,49 +2391,202 @@ class AggregateControllerStreaming:
             logging.exception("Error updating image view: %s", exc)
 
     def _draw_slm_circles(self, image: np.ndarray, scale: float) -> np.ndarray:
-        """Draw circles on the image at SLM point locations.
+        """Draw circles on the image at SLM point locations and fine-tuning visualizations.
         
         Args:
             image: RGB image array (H, W, 3)
             scale: Current zoom scale factor
             
         Returns:
-            Image with circles drawn
+            Image with circles and visualizations drawn
         """
-        if not self.slm_points or not self.slm_client.connected:
-            return image
-        
         import cv2
         
         # Make a copy so we don't modify the original
         img_with_circles = image.copy()
         
-        # Convert color from 0-255 to OpenCV format
-        color_bgr = (self.circle_color[2], self.circle_color[1], self.circle_color[0])  # RGB to BGR
-        
-        # Scale radius and thickness
-        scaled_radius = int(self.circle_radius * scale)
-        scaled_thickness = max(1, int(self.circle_thickness * scale))
-        
-        logging.debug(f"Drawing {len(self.slm_points)} circles with scale={scale:.2f}, radius={scaled_radius}, thickness={scaled_thickness}")
-        
-        for idx, point in enumerate(self.slm_points):
-            # Convert point coordinates (in original image space) to display coordinates
-            display_x = int(point.x * scale)
-            display_y = int(point.y * scale)
-            
-            logging.debug(f"  Point {idx}: orig=({point.x:.1f}, {point.y:.1f}) -> display=({display_x}, {display_y})")
-            
-            # Draw circle
-            cv2.circle(  # type: ignore
-                img_with_circles,
-                (display_x, display_y),
-                scaled_radius,
-                color_bgr,
-                scaled_thickness
+        # Draw fine-tuning visualization if active
+        if (
+            self.finetuning_state.show_visualization
+            and (
+                self.finetuning_state.active
+                or bool(self.finetuning_state.manual_sample_points)
             )
+        ):
+            img_with_circles = self._draw_finetuning_overlay(img_with_circles, scale)
+        
+        # Draw regular SLM circles
+        if self.slm_points and self.slm_client.connected:
+            # Convert color from 0-255 to OpenCV format
+            color_bgr = (self.circle_color[2], self.circle_color[1], self.circle_color[0])  # RGB to BGR
+            
+            # Scale radius and thickness
+            scaled_radius = int(self.circle_radius * scale)
+            scaled_thickness = max(1, int(self.circle_thickness * scale))
+            
+            logging.debug(f"Drawing {len(self.slm_points)} circles with scale={scale:.2f}, radius={scaled_radius}, thickness={scaled_thickness}")
+            
+            for idx, point in enumerate(self.slm_points):
+                # Convert point coordinates (in original image space) to display coordinates
+                display_x = int(point.x * scale)
+                display_y = int(point.y * scale)
+                
+                logging.debug(f"  Point {idx}: orig=({point.x:.1f}, {point.y:.1f}) -> display=({display_x}, {display_y})")
+                
+                # Draw circle
+                cv2.circle(  # type: ignore
+                    img_with_circles,
+                    (display_x, display_y),
+                    scaled_radius,
+                    color_bgr,
+                    scaled_thickness
+                )
         
         return img_with_circles
+    
+    def _draw_finetuning_overlay(self, image: np.ndarray, scale: float) -> np.ndarray:
+        """Draw fine-tuning visualization overlay with animations.
+        
+        Args:
+            image: RGB image array (H, W, 3)
+            scale: Current zoom scale factor
+            
+        Returns:
+            Image with fine-tuning overlay drawn
+        """
+        import cv2
+        
+        # Update animation phase (pulsing effect)
+        self.finetuning_state.animation_phase = (self.finetuning_state.animation_phase + 0.05) % 1.0
+        pulse = 0.7 + 0.3 * np.sin(self.finetuning_state.animation_phase * 2 * np.pi)
+        
+        # Draw sampling area boundary
+        if self.finetuning_state.sample_area_max_x > 0:
+            margin_color = (100, 100, 255)  # Light blue
+            margin_thickness = max(1, int(2 * scale))
+            
+            min_x = int(self.finetuning_state.sample_area_min_x * scale)
+            min_y = int(self.finetuning_state.sample_area_min_y * scale)
+            max_x = int(self.finetuning_state.sample_area_max_x * scale)
+            max_y = int(self.finetuning_state.sample_area_max_y * scale)
+            
+            cv2.rectangle(image, (min_x, min_y), (max_x, max_y), margin_color, margin_thickness)  # type: ignore
+        
+        # Draw completed sample points and their matches
+        for i, (sample_pt, particle_pt) in enumerate(zip(
+            self.finetuning_state.sample_points,
+            self.finetuning_state.matched_particles
+        )):
+            sample_x = int(sample_pt[0] * scale)
+            sample_y = int(sample_pt[1] * scale)
+            particle_x = int(particle_pt[0] * scale)
+            particle_y = int(particle_pt[1] * scale)
+            
+            error = self.finetuning_state.errors[i] if i < len(self.finetuning_state.errors) else 0
+            
+            # Color based on error (green = good, yellow = medium, red = bad)
+            if error < 5.0:
+                color = (0, 255, 0)  # Green
+            elif error < 15.0:
+                color = (0, 255, 255)  # Yellow
+            else:
+                color = (0, 0, 255)  # Red
+            
+            # Draw target point (small cross)
+            cross_size = int(8 * scale)
+            cv2.line(image, (sample_x - cross_size, sample_y), (sample_x + cross_size, sample_y), color, 2)  # type: ignore
+            cv2.line(image, (sample_x, sample_y - cross_size), (sample_x, sample_y + cross_size), color, 2)  # type: ignore
+            
+            # Draw matched particle (small circle)
+            cv2.circle(image, (particle_x, particle_y), int(5 * scale), color, 2)  # type: ignore
+            
+            # Draw error vector (line from target to particle)
+            cv2.line(image, (sample_x, sample_y), (particle_x, particle_y), color, 1)  # type: ignore
+
+        # Draw manual sample overlays in magenta
+        for manual_pt, manual_particle, error in zip(
+            self.finetuning_state.manual_sample_points,
+            self.finetuning_state.manual_matched_particles,
+            self.finetuning_state.manual_errors,
+        ):
+            sample_x = int(manual_pt[0] * scale)
+            sample_y = int(manual_pt[1] * scale)
+            particle_x = int(manual_particle[0] * scale)
+            particle_y = int(manual_particle[1] * scale)
+            color = (255, 0, 255)
+            size = int(10 * scale)
+            cv2.rectangle(  # type: ignore
+                image,
+                (sample_x - size, sample_y - size),
+                (sample_x + size, sample_y + size),
+                color,
+                2,
+            )
+            cv2.circle(image, (particle_x, particle_y), int(5 * scale), color, 2)  # type: ignore
+            cv2.line(image, (sample_x, sample_y), (particle_x, particle_y), color, 1)  # type: ignore
+        
+        # Draw current target with pulsing animation
+        if self.finetuning_state.current_target:
+            target_x = int(self.finetuning_state.current_target[0] * scale)
+            target_y = int(self.finetuning_state.current_target[1] * scale)
+            
+            # Pulsing cyan circle for current target
+            pulse_color = (int(255 * pulse), 255, 255)  # Cyan with pulsing brightness
+            pulse_radius = int((15 + 5 * pulse) * scale)
+            cv2.circle(image, (target_x, target_y), pulse_radius, pulse_color, 3)  # type: ignore
+            
+            # Add cross hair
+            cross_size = int(20 * scale)
+            cv2.line(image, (target_x - cross_size, target_y), (target_x + cross_size, target_y), pulse_color, 2)  # type: ignore
+            cv2.line(image, (target_x, target_y - cross_size), (target_x, target_y + cross_size), pulse_color, 2)  # type: ignore
+            
+            # Draw text label
+            label = f"Sample {self.finetuning_state.current_sample}/{self.finetuning_state.total_samples}"
+            font_scale = 0.5 * scale
+            thickness = max(1, int(1 * scale))
+            text_offset_y = int(30 * scale)
+            
+            cv2.putText(  # type: ignore
+                image, label,
+                (target_x + int(20 * scale), target_y - text_offset_y),
+                cv2.FONT_HERSHEY_SIMPLEX,  # type: ignore
+                font_scale, pulse_color, thickness
+            )
+        
+        # Draw current matched particle with pulsing animation
+        if self.finetuning_state.current_match:
+            match_x = int(self.finetuning_state.current_match[0] * scale)
+            match_y = int(self.finetuning_state.current_match[1] * scale)
+            
+            # Pulsing green circle for matched particle
+            match_color = (0, int(255 * pulse), 0)  # Green with pulsing brightness
+            match_radius = int((12 + 4 * pulse) * scale)
+            cv2.circle(image, (match_x, match_y), match_radius, match_color, 3)  # type: ignore
+            
+            # Draw line connecting current target to match
+            if self.finetuning_state.current_target:
+                target_x = int(self.finetuning_state.current_target[0] * scale)
+                target_y = int(self.finetuning_state.current_target[1] * scale)
+                cv2.line(image, (target_x, target_y), (match_x, match_y), (0, 255, 255), 2)  # type: ignore
+
+        # Draw trace of tracked particle history
+        if self.finetuning_state.current_track_history:
+            track_points = [
+                (int(px * scale), int(py * scale))
+                for px, py in self.finetuning_state.current_track_history
+            ]
+            if len(track_points) >= 2:
+                cv2.polylines(  # type: ignore
+                    image,
+                    [np.array(track_points, dtype=np.int32)],
+                    False,
+                    (255, 165, 0),
+                    max(1, int(2 * scale)),
+                )
+            for px, py in track_points[-5:]:
+                cv2.circle(image, (px, py), max(1, int(3 * scale)), (255, 200, 0), -1)  # type: ignore
+        
+        return image
     
     def _update_cursor_label(self) -> None:
         """Update cursor position label with scaled image coordinates."""
@@ -2727,6 +2943,79 @@ class AggregateControllerStreaming:
             
         except Exception as exc:
             logging.exception("Error updating SLM metrics: %s", exc)
+    
+    def _update_finetuning_display(self) -> None:
+        """Update fine-tuning UI elements."""
+        if not self.ui:
+            return
+        
+        try:
+            # Update progress bar
+            if self.ui.finetuning_progress_bar:
+                dpg.set_value(self.ui.finetuning_progress_bar, self.finetuning_state.progress)
+            
+            # Update status text
+            if self.ui.finetuning_status_text:
+                if self.finetuning_state.active:
+                    if self.finetuning_state.paused:
+                        status = f"Paused at {self.finetuning_state.current_sample}/{self.finetuning_state.total_samples}"
+                    else:
+                        status = f"Running: {self.finetuning_state.current_sample}/{self.finetuning_state.total_samples}"
+                    dpg.set_value(self.ui.finetuning_status_text, status)
+                    dpg.configure_item(self.ui.finetuning_status_text, color=SLM_COLOR)
+                elif self.finetuning_state.progress >= 1.0:
+                    status = "Completed! Check configs above."
+                    dpg.set_value(self.ui.finetuning_status_text, status)
+                    dpg.configure_item(self.ui.finetuning_status_text, color=STATUS_CONNECTED)
+                    
+                    # Re-enable start button
+                    if self.ui.finetuning_start_button:
+                        dpg.configure_item(self.ui.finetuning_start_button, enabled=True)
+                    if self.ui.finetuning_pause_button:
+                        dpg.configure_item(self.ui.finetuning_pause_button, enabled=False)
+                    if self.ui.finetuning_stop_button:
+                        dpg.configure_item(self.ui.finetuning_stop_button, enabled=False)
+                    
+                    # Refresh config list and update metadata
+                    if self.ui.finetuning_config_combo:
+                        configs = self.list_finetuning_configs()
+                        if configs:
+                            dpg.configure_item(
+                                self.ui.finetuning_config_combo,
+                                items=configs,
+                                default_value=configs[0]  # Select newest
+                            )
+                            # Force metadata update for the new config
+                            _update_finetuning_metadata_display(self)
+                        else:
+                            dpg.configure_item(
+                                self.ui.finetuning_config_combo,
+                                items=["No fine-tuned configs"],
+                                default_value="No fine-tuned configs"
+                            )
+                    
+                    # Reset progress to allow detection of next completion
+                    # (use a flag to avoid repeated updates)
+                    if not hasattr(self, '_last_completion_notified'):
+                        self._last_completion_notified = False
+                    if not self._last_completion_notified:
+                        self._last_completion_notified = True
+                        logging.info("Fine-tuning completion detected, UI updated")
+                else:
+                    status = "Ready to start"
+                    dpg.set_value(self.ui.finetuning_status_text, status)
+                    dpg.configure_item(self.ui.finetuning_status_text, color=SLM_COLOR)
+            
+            # Update config metadata when selection changes
+            if self.ui.finetuning_config_combo and self.ui.finetuning_metadata_text:
+                config_name = dpg.get_value(self.ui.finetuning_config_combo)
+                if config_name and config_name != "No fine-tuned configs":
+                    current_text = dpg.get_value(self.ui.finetuning_metadata_text)
+                    if not current_text:  # Only update if empty
+                        _update_finetuning_metadata_display(self)
+        
+        except Exception as exc:
+            logging.exception("Error updating fine-tuning display: %s", exc)
 
     # Monitoring functionality
     
@@ -3170,6 +3459,743 @@ class AggregateControllerStreaming:
             width=-1,
             parent=self.ui.experiment_params_container
         )
+
+    # Fine-tuning methods
+    
+    def start_finetuning(self, sample_count: int, margin_pixels: float) -> None:
+        """Start the auto fine-tuning process."""
+        logging.info(f"start_finetuning called with samples={sample_count}, margin={margin_pixels}")
+        
+        # Immediate UI feedback
+        if self.ui and self.ui.finetuning_status_text:
+            dpg.set_value(self.ui.finetuning_status_text, "Initializing...")
+            dpg.configure_item(self.ui.finetuning_status_text, color=SLM_COLOR)
+        
+        if self.finetuning_state.active:
+            logging.warning("Fine-tuning already active")
+            if self.ui and self.ui.finetuning_status_text:
+                dpg.set_value(self.ui.finetuning_status_text, "ERROR: Already running")
+                dpg.configure_item(self.ui.finetuning_status_text, color=STATUS_DISCONNECTED)
+            return
+        
+        if not self.slm_client.connected:
+            logging.error("Cannot start fine-tuning: SLM not connected")
+            if self.ui and self.ui.finetuning_status_text:
+                dpg.set_value(self.ui.finetuning_status_text, "ERROR: SLM not connected")
+                dpg.configure_item(self.ui.finetuning_status_text, color=STATUS_DISCONNECTED)
+            return
+        
+        if not self.image_state.connected:
+            logging.error("Cannot start fine-tuning: Image server not connected")
+            if self.ui and self.ui.finetuning_status_text:
+                dpg.set_value(self.ui.finetuning_status_text, "ERROR: Image server not connected")
+                dpg.configure_item(self.ui.finetuning_status_text, color=STATUS_DISCONNECTED)
+            return
+        
+        # Reset state
+        self.finetuning_state = FineTuningState(
+            active=True,
+            progress=0.0,
+            current_sample=0,
+            total_samples=sample_count,
+            margin_pixels=margin_pixels,
+            base_config_name=self.slm_config_manager.get_current_config().name,
+            show_visualization=self.finetuning_state.show_visualization,
+            base_affine_params=self.slm_affine_params.copy(),
+        )
+        self._sync_manual_samples_to_state()
+        
+        # Reset completion notification flag
+        self._last_completion_notified = False
+        
+        # Start fine-tuning in background thread
+        self.finetuning_thread = threading.Thread(target=self._finetuning_worker, daemon=True)
+        self.finetuning_thread.start()
+        
+        logging.info(f"Started fine-tuning with {sample_count} samples, {margin_pixels}px margin")
+    
+    def stop_finetuning(self) -> None:
+        """Stop the fine-tuning process."""
+        if not self.finetuning_state.active:
+            return
+        
+        self.finetuning_state.active = False
+        logging.info("Stopping fine-tuning...")
+    
+    def pause_finetuning(self) -> None:
+        """Pause/resume the fine-tuning process."""
+        if not self.finetuning_state.active:
+            return
+        
+        self.finetuning_state.paused = not self.finetuning_state.paused
+        status = "paused" if self.finetuning_state.paused else "resumed"
+        logging.info(f"Fine-tuning {status}")
+    
+    def _finetuning_worker(self) -> None:
+        """Worker thread for fine-tuning process."""
+        try:
+            # Get image dimensions for sampling area
+            if self.image_state.latest_image_array is None:
+                logging.error("No image available for fine-tuning")
+                self.finetuning_state.active = False
+                return
+            
+            img = self.image_state.latest_image_array
+            img_height, img_width = img.shape[:2]
+            
+            # Calculate sampling area with margins
+            margin = self.finetuning_state.margin_pixels
+            min_x = margin
+            min_y = margin
+            max_x = img_width - margin
+            max_y = img_height - margin
+            
+            self.finetuning_state.sample_area_min_x = min_x
+            self.finetuning_state.sample_area_min_y = min_y
+            self.finetuning_state.sample_area_max_x = max_x
+            self.finetuning_state.sample_area_max_y = max_y
+            
+            # Collect samples
+            samples: List[FineTuningSample] = []
+            
+            for i in range(self.finetuning_state.total_samples):
+                if not self.finetuning_state.active:
+                    break
+                
+                # Wait if paused
+                while self.finetuning_state.paused and self.finetuning_state.active:
+                    time.sleep(0.1)
+                
+                if not self.finetuning_state.active:
+                    break
+                
+                # Generate random point in sampling area
+                target_x = np.random.uniform(min_x, max_x)
+                target_y = np.random.uniform(min_y, max_y)
+                
+                # Update UI with current target
+                self.finetuning_state.current_target = (target_x, target_y)
+                self.finetuning_state.current_sample = i + 1
+                self.finetuning_state.progress = (i + 1) / self.finetuning_state.total_samples
+                self.finetuning_state.current_track_history = []
+                
+                # Pin the point
+                self.clear_points()
+                self.add_point(target_x, target_y)
+                self.force_send_slm()
+                
+                capture_particle, capture_history = self._wait_for_particle_near(
+                    target_x,
+                    target_y,
+                    timeout=3.0,
+                    radius=30.0,
+                    hold_frames=6,
+                    require_active=True,
+                )
+                self.finetuning_state.current_track_history = list(capture_history)
+
+                if capture_particle is None:
+                    logging.warning(
+                        "Sample %d: no particle locked near (%.1f, %.1f)",
+                        i + 1,
+                        target_x,
+                        target_y,
+                    )
+                    self.finetuning_state.current_match = None
+                    time.sleep(0.3)
+                    continue
+
+                validated, final_particle, validation_history = self._validate_particle_follow(
+                    capture_particle,
+                    target_x,
+                    target_y,
+                    radius=35.0,
+                    step_size=max(6.0, self.finetuning_state.margin_pixels * 0.1),
+                )
+                self.finetuning_state.current_track_history.extend(validation_history)
+
+                if not validated or final_particle is None:
+                    logging.warning(
+                        "Sample %d: trapped particle did not follow the validation sweep",
+                        i + 1,
+                    )
+                    self.finetuning_state.current_match = None
+                    time.sleep(0.3)
+                    continue
+
+                particle_x, particle_y = final_particle
+                error = math.hypot(target_x - particle_x, target_y - particle_y)
+
+                sample = FineTuningSample(
+                    slm_x=target_x,
+                    slm_y=target_y,
+                    particle_x=particle_x,
+                    particle_y=particle_y,
+                    error=error,
+                )
+                samples.append(sample)
+
+                # Update visualization
+                self.finetuning_state.sample_points.append((target_x, target_y))
+                self.finetuning_state.matched_particles.append((particle_x, particle_y))
+                self.finetuning_state.errors.append(error)
+                self.finetuning_state.current_match = final_particle
+
+                logging.info(
+                    "Sample %d/%d captured (error %.2f px)",
+                    i + 1,
+                    self.finetuning_state.total_samples,
+                    error,
+                )
+                
+                # Small delay between samples
+                time.sleep(0.5)
+            
+            # Compute refined calibration
+            manual_samples: List[FineTuningSample] = []
+            with self.manual_calibration_lock:
+                if self.manual_calibration_samples:
+                    manual_samples = list(self.manual_calibration_samples)
+
+            combined_samples = samples + manual_samples if manual_samples else samples
+
+            if len(combined_samples) >= 3 and self.finetuning_state.active:
+                if manual_samples:
+                    logging.info(
+                        "Including %d manual calibration samples in refinement (auto=%d)",
+                        len(manual_samples),
+                        len(samples),
+                    )
+                self._compute_refined_calibration(combined_samples)
+            else:
+                logging.error(
+                    "Insufficient samples for calibration: %d < 3",
+                    len(combined_samples),
+                )
+                self.finetuning_state.active = False
+        
+        except Exception as exc:
+            logging.exception(f"Fine-tuning error: {exc}")
+        finally:
+            if self.finetuning_state.active:
+                self.finetuning_state.active = False
+                self.finetuning_state.progress = 1.0
+            
+            # Clear the trap
+            self.clear_points()
+            self.force_send_slm()
+    
+    def _find_nearest_particle(self, x: float, y: float, max_distance: float = 100.0) -> Optional[Tuple[float, float]]:
+        """Find the nearest tracked particle to a given position.
+        
+        Args:
+            x: Target x coordinate
+            y: Target y coordinate
+            max_distance: Maximum search radius in pixels
+            
+        Returns:
+            Tuple of (particle_x, particle_y) or None if no particle found
+        """
+        if not hasattr(self.image_state, 'tracks') or not self.image_state.tracks:
+            return None
+        
+        nearest_dist = max_distance
+        nearest_particle = None
+        
+        for track in self.image_state.tracks:
+            if isinstance(track, dict):
+                px = float(track.get('x', 0.0))
+                py = float(track.get('y', 0.0))
+                
+                dist = np.sqrt((x - px)**2 + (y - py)**2)
+                if dist < nearest_dist:
+                    nearest_dist = dist
+                    nearest_particle = (px, py)
+        
+        return nearest_particle
+    
+    def _snapshot_tracks(self) -> List[Dict[str, Any]]:
+        """Return a snapshot of the current detection tracks."""
+        tracks: List[Dict[str, Any]] = []
+        lock = getattr(self.image_state, "lock", None)
+        if lock is not None:
+            with lock:
+                tracks = [dict(track) for track in getattr(self.image_state, "tracks", [])]
+        else:
+            tracks = [dict(track) for track in getattr(self.image_state, "tracks", [])]
+        return tracks
+
+    @staticmethod
+    def _nearest_track_position(tracks: Sequence[Dict[str, Any]], x: float, y: float) -> Tuple[Optional[Tuple[float, float]], float]:
+        """Compute nearest track position to desired location."""
+        closest: Optional[Tuple[float, float]] = None
+        best_distance = float("inf")
+        for track in tracks:
+            try:
+                px = float(track.get("x", 0.0))
+                py = float(track.get("y", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(px) and math.isfinite(py)):
+                continue
+            distance = math.hypot(px - x, py - y)
+            if distance < best_distance:
+                best_distance = distance
+                closest = (px, py)
+        return closest, best_distance
+
+    def _wait_for_particle_near(
+        self,
+        x: float,
+        y: float,
+        *,
+        timeout: float = 2.5,
+        radius: float = 30.0,
+        hold_frames: int = 5,
+        poll_interval: float = 0.05,
+        require_active: bool = False,
+    ) -> Tuple[Optional[Tuple[float, float]], List[Tuple[float, float]]]:
+        """Track until a particle remains near the target for several frames."""
+        start = time.time()
+        consecutive = 0
+        history: List[Tuple[float, float]] = []
+        last_point: Optional[Tuple[float, float]] = None
+        while time.time() - start < timeout:
+            if require_active and not self.finetuning_state.active:
+                break
+            tracks = self._snapshot_tracks()
+            if not tracks:
+                time.sleep(poll_interval)
+                continue
+            candidate, distance = self._nearest_track_position(tracks, x, y)
+            if candidate is None:
+                time.sleep(poll_interval)
+                continue
+            history.append(candidate)
+            if distance <= radius:
+                if last_point is not None:
+                    drift = math.hypot(candidate[0] - last_point[0], candidate[1] - last_point[1])
+                    if drift <= max(5.0, radius * 0.2):
+                        consecutive += 1
+                    else:
+                        consecutive = 1
+                else:
+                    consecutive = 1
+                last_point = candidate
+            else:
+                consecutive = 0
+                last_point = None
+            if consecutive >= hold_frames:
+                return candidate, history
+            time.sleep(poll_interval)
+        return None, history
+
+    def _validate_particle_follow(
+        self,
+        captured_particle: Tuple[float, float],
+        target_x: float,
+        target_y: float,
+        *,
+        radius: float = 30.0,
+        step_size: float = 10.0,
+        steps: int = 3,
+        timeout: float = 1.5,
+    ) -> Tuple[bool, Optional[Tuple[float, float]], List[Tuple[float, float]]]:
+        """Move the trap and confirm the same particle follows the commanded motion."""
+        if not self.slm_points:
+            return False, None, []
+
+        history: List[Tuple[float, float]] = []
+        previous_particle = captured_particle
+        current_x, current_y = target_x, target_y
+
+        # Determine safe bounds for horizontal movement
+        min_x = self.finetuning_state.sample_area_min_x or 0.0
+        max_x = self.finetuning_state.sample_area_max_x or (float(self.image_state.latest_image_array.shape[1]) if self.image_state.latest_image_array is not None else target_x + step_size * steps)
+        step_direction = 1.0
+        if current_x + step_size * steps > max_x:
+            step_direction = -1.0
+        if current_x + step_direction * step_size * steps < min_x:
+            step_direction = 1.0  # fallback to positive direction if clamped region is too tight
+
+        success = True
+        for _ in range(steps):
+            next_x = current_x + step_direction * step_size
+            next_y = current_y
+            next_x = max(min_x, min(max_x, next_x))
+
+            self.move_point(0, next_x, next_y)
+            self.force_send_slm()
+            time.sleep(0.15)
+
+            particle, step_history = self._wait_for_particle_near(
+                next_x,
+                next_y,
+                timeout=timeout,
+                radius=radius,
+                hold_frames=4,
+                require_active=True,
+            )
+            history.extend(step_history)
+            if particle is None:
+                success = False
+                break
+
+            commanded_delta = math.hypot(next_x - current_x, next_y - current_y)
+            actual_delta = math.hypot(particle[0] - previous_particle[0], particle[1] - previous_particle[1])
+            if commanded_delta >= 1.0:
+                # Allow generous slack but ensure motion is correlated with the trap move
+                if abs(actual_delta - commanded_delta) > max(3.0, commanded_delta * 0.75):
+                    success = False
+                    break
+
+            previous_particle = particle
+            current_x, current_y = next_x, next_y
+
+        # Return to the original location
+        self.move_point(0, target_x, target_y)
+        self.force_send_slm()
+        time.sleep(0.15)
+        final_particle, final_history = self._wait_for_particle_near(
+            target_x,
+            target_y,
+            timeout=timeout,
+            radius=radius,
+            hold_frames=4,
+            require_active=True,
+        )
+        history.extend(final_history)
+
+        if not success or final_particle is None:
+            return False, final_particle if success else None, history
+        return True, final_particle, history
+
+    def _compute_refined_calibration(self, samples: List[FineTuningSample]) -> None:
+        """Compute refined calibration from fine-tuning samples."""
+        from slm_config.slm_finetuning_manager import (
+            compute_affine_transform,
+            transform_points,
+        )
+
+        if not samples:
+            logging.error("Fine-tuning did not collect any samples")
+            return
+
+        base_params = dict(self.finetuning_state.base_affine_params or self.slm_affine_params)
+        required_keys = {
+            "cam_x0", "cam_y0", "slm_x0", "slm_y0",
+            "cam_x1", "cam_y1", "slm_x1", "slm_y1",
+            "cam_x2", "cam_y2", "slm_x2", "slm_y2",
+        }
+        if not required_keys.issubset(base_params):
+            missing = sorted(required_keys.difference(base_params))
+            logging.error("Base affine parameters missing keys: %s", ", ".join(missing))
+            return
+
+        # Build baseline camera→SLM mapping from the active configuration.
+        base_camera_points = np.array([
+            [base_params["cam_x0"], base_params["cam_y0"]],
+            [base_params["cam_x1"], base_params["cam_y1"]],
+            [base_params["cam_x2"], base_params["cam_y2"]],
+        ], dtype=np.float64)
+        base_slm_points = np.array([
+            [base_params["slm_x0"], base_params["slm_y0"]],
+            [base_params["slm_x1"], base_params["slm_y1"]],
+            [base_params["slm_x2"], base_params["slm_y2"]],
+        ], dtype=np.float64)
+
+        try:
+            base_affine_matrix, _ = compute_affine_transform(base_camera_points, base_slm_points)
+        except ValueError as exc:
+            logging.exception("Failed to compute baseline affine matrix: %s", exc)
+            return
+
+        # Measurements: desired image coordinates (targets), detected particle coordinates, and
+        # the SLM coordinates actually issued by the current calibration.
+        desired_points = np.array([[s.slm_x, s.slm_y] for s in samples], dtype=np.float64)
+        particle_points = np.array([[s.particle_x, s.particle_y] for s in samples], dtype=np.float64)
+        commanded_slm_points = transform_points(desired_points, base_affine_matrix)
+
+        # Error metrics before refinement (camera space).
+        errors_before = np.linalg.norm(desired_points - particle_points, axis=1)
+        rms_before = float(np.sqrt(np.mean(errors_before ** 2))) if len(errors_before) else 0.0
+        max_before = float(np.max(errors_before)) if len(errors_before) else 0.0
+        mean_before = float(np.mean(errors_before)) if len(errors_before) else 0.0
+
+        try:
+            slm_to_camera_matrix, rms_slm_to_camera = compute_affine_transform(
+                commanded_slm_points, particle_points
+            )
+            camera_to_slm_matrix, _ = compute_affine_transform(
+                particle_points, commanded_slm_points
+            )
+        except ValueError as exc:
+            logging.exception("Fine-tuning failed to fit affine mappings: %s", exc)
+            return
+
+        if not (np.isfinite(camera_to_slm_matrix).all() and np.isfinite(slm_to_camera_matrix).all()):
+            logging.error("Computed affine matrices contain non-finite values; aborting fine-tuning")
+            return
+
+        # Predict post-correction camera error by composing the new mapping with the
+        # observed SLM→camera transform.
+        predicted_slm_for_targets = transform_points(desired_points, camera_to_slm_matrix)
+        predicted_camera_after = transform_points(predicted_slm_for_targets, slm_to_camera_matrix)
+        errors_after_camera = np.linalg.norm(predicted_camera_after - desired_points, axis=1)
+        rms_after = float(np.sqrt(np.mean(errors_after_camera ** 2))) if len(errors_after_camera) else 0.0
+        max_after = float(np.max(errors_after_camera)) if len(errors_after_camera) else 0.0
+        mean_after = float(np.mean(errors_after_camera)) if len(errors_after_camera) else 0.0
+
+        # Derive refined legacy parameters by adjusting the existing reference camera points.
+        refined_slm_points = transform_points(base_camera_points, camera_to_slm_matrix)
+        refined_params = {
+            "refined_cam_x0": float(base_camera_points[0, 0]),
+            "refined_cam_y0": float(base_camera_points[0, 1]),
+            "refined_slm_x0": float(refined_slm_points[0, 0]),
+            "refined_slm_y0": float(refined_slm_points[0, 1]),
+            "refined_cam_x1": float(base_camera_points[1, 0]),
+            "refined_cam_y1": float(base_camera_points[1, 1]),
+            "refined_slm_x1": float(refined_slm_points[1, 0]),
+            "refined_slm_y1": float(refined_slm_points[1, 1]),
+            "refined_cam_x2": float(base_camera_points[2, 0]),
+            "refined_cam_y2": float(base_camera_points[2, 1]),
+            "refined_slm_x2": float(refined_slm_points[2, 0]),
+            "refined_slm_y2": float(refined_slm_points[2, 1]),
+        }
+
+        slm_residuals = np.linalg.norm(
+            transform_points(particle_points, camera_to_slm_matrix) - commanded_slm_points,
+            axis=1,
+        )
+        logging.info(
+            "Fine-tuning fit summary: rms_before=%.2fpx, rms_after=%.2fpx, "
+            "slm_to_camera_rms=%.2fpx, residual_slm=%.2fpx",
+            rms_before,
+            rms_after,
+            float(rms_slm_to_camera),
+            float(np.sqrt(np.mean(slm_residuals ** 2))) if len(slm_residuals) else 0.0,
+        )
+
+        # Create fine-tuning result artifact.
+        result = FineTuningResult(
+            name=self.finetuning_manager.generate_name(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            base_config_name=self.finetuning_state.base_config_name,
+            sample_count=len(samples),
+            margin_pixels=self.finetuning_state.margin_pixels,
+            sample_area_min_x=self.finetuning_state.sample_area_min_x,
+            sample_area_min_y=self.finetuning_state.sample_area_min_y,
+            sample_area_max_x=self.finetuning_state.sample_area_max_x,
+            sample_area_max_y=self.finetuning_state.sample_area_max_y,
+            samples=[{
+                "slm_x": s.slm_x,
+                "slm_y": s.slm_y,
+                "particle_x": s.particle_x,
+                "particle_y": s.particle_y,
+                "error": s.error,
+            } for s in samples],
+            rms_error_before=rms_before,
+            rms_error_after=rms_after,
+            max_error_before=max_before,
+            max_error_after=max_after,
+            mean_error_before=mean_before,
+            mean_error_after=mean_after,
+            **refined_params,
+            description=f"Auto-generated fine-tuning based on {self.finetuning_state.base_config_name}",
+        )
+
+        if self.finetuning_manager.save_result(result):
+            improvement = result.get_improvement_percentage()
+            logging.info(
+                "Fine-tuning complete! RMS error: %.2fpx → %.2fpx (%.1f%% improvement)",
+                rms_before,
+                rms_after,
+                improvement,
+            )
+            logging.info("Saved as: %s", result.name)
+
+            if self.ui and self.ui.finetuning_config_combo:
+                configs = self.list_finetuning_configs()
+                if configs:
+                    dpg.configure_item(
+                        self.ui.finetuning_config_combo,
+                        items=configs,
+                        default_value=configs[0],
+                    )
+                    _update_finetuning_metadata_display(self)
+                else:
+                    dpg.configure_item(self.ui.finetuning_config_combo, items=["No fine-tuned configs"])
+                logging.info("Updated combo box with %d configs", len(configs))
+        else:
+            logging.error("Failed to save fine-tuning result")
+    
+    def load_finetuning_config(self, name: str) -> bool:
+        """Load a fine-tuning configuration as the active SLM config."""
+        result = self.finetuning_manager.load_result(name)
+        if not result:
+            logging.error(f"Fine-tuning config '{name}' not found")
+            return False
+        
+        # Update affine parameters
+        self.slm_affine_params.update({
+            'cam_x0': result.refined_cam_x0,
+            'cam_y0': result.refined_cam_y0,
+            'slm_x0': result.refined_slm_x0,
+            'slm_y0': result.refined_slm_y0,
+            'cam_x1': result.refined_cam_x1,
+            'cam_y1': result.refined_cam_y1,
+            'slm_x1': result.refined_slm_x1,
+            'slm_y1': result.refined_slm_y1,
+            'cam_x2': result.refined_cam_x2,
+            'cam_y2': result.refined_cam_y2,
+            'slm_x2': result.refined_slm_x2,
+            'slm_y2': result.refined_slm_y2,
+        })
+        
+        # Update UI
+        self._update_slm_affine_ui()
+        
+        # Mark SLM as dirty to trigger update
+        self._mark_slm_dirty()
+        
+        logging.info(f"Loaded fine-tuning config: {name}")
+        return True
+
+    # Manual calibration helpers
+
+    def _set_manual_status(self, message: str, color: Tuple[int, int, int, int] = TEXT_PRIMARY) -> None:
+        if self.ui and self.ui.manual_status_text:
+            dpg.set_value(self.ui.manual_status_text, message)
+            dpg.configure_item(self.ui.manual_status_text, color=color)
+
+    def _update_manual_calibration_ui(self) -> None:
+        if not self.ui:
+            return
+        count = 0
+        with self.manual_calibration_lock:
+            count = len(self.manual_calibration_samples)
+        if self.ui.manual_sample_count_text:
+            dpg.set_value(self.ui.manual_sample_count_text, f"Manual samples: {count}")
+        if self.ui.manual_apply_button:
+            dpg.configure_item(self.ui.manual_apply_button, enabled=count >= 3)
+        if self.ui.manual_clear_button:
+            dpg.configure_item(self.ui.manual_clear_button, enabled=count > 0)
+
+    def _sync_manual_samples_to_state(self) -> None:
+        """Replicate stored manual samples into the active fine-tuning state for visualization."""
+        with self.manual_calibration_lock:
+            samples_copy = list(self.manual_calibration_samples)
+        self.finetuning_state.manual_sample_points = [(s.slm_x, s.slm_y) for s in samples_copy]
+        self.finetuning_state.manual_matched_particles = [(s.particle_x, s.particle_y) for s in samples_copy]
+        self.finetuning_state.manual_errors = [s.error for s in samples_copy]
+
+    def capture_manual_calibration_sample(self, point_index: int = 0) -> bool:
+        """Capture a manual camera↔SLM mapping sample based on the active trap."""
+        if not self.slm_points:
+            logging.warning("Manual calibration requires at least one SLM point")
+            self._set_manual_status("ERROR: Add an SLM point first", STATUS_DISCONNECTED)
+            return False
+
+        if not self.slm_client.connected:
+            logging.warning("Manual calibration requires an active SLM connection")
+            self._set_manual_status("ERROR: SLM not connected", STATUS_DISCONNECTED)
+            return False
+
+        if not self.image_state.connected:
+            logging.warning("Manual calibration requires the image server connection")
+            self._set_manual_status("ERROR: Image server not connected", STATUS_DISCONNECTED)
+            return False
+
+        idx = max(0, min(point_index, len(self.slm_points) - 1))
+        point = self.slm_points[idx]
+
+        particle, history = self._wait_for_particle_near(
+            point.x,
+            point.y,
+            timeout=3.0,
+            radius=28.0,
+            hold_frames=6,
+            require_active=False,
+        )
+        self.finetuning_state.current_track_history = list(history)
+        if particle is None:
+            logging.warning("Manual calibration: no particle detected near (%.1f, %.1f)", point.x, point.y)
+            self._set_manual_status("No tracked particle at trap", STATUS_DISCONNECTED)
+            self.finetuning_state.current_match = None
+            return False
+
+        self.finetuning_state.current_match = particle
+        error = math.hypot(point.x - particle[0], point.y - particle[1])
+        sample = FineTuningSample(
+            slm_x=point.x,
+            slm_y=point.y,
+            particle_x=particle[0],
+            particle_y=particle[1],
+            error=error,
+        )
+        with self.manual_calibration_lock:
+            self.manual_calibration_samples.append(sample)
+            count = len(self.manual_calibration_samples)
+        self._sync_manual_samples_to_state()
+
+        logging.info("Manual calibration sample #%d stored (error %.2f px)", count, error)
+        self._set_manual_status(f"Captured manual sample #{count}", STATUS_CONNECTED)
+        self._update_manual_calibration_ui()
+        return True
+
+    def clear_manual_calibration_samples(self) -> None:
+        """Reset stored manual calibration samples."""
+        with self.manual_calibration_lock:
+            self.manual_calibration_samples.clear()
+        self.finetuning_state.manual_sample_points.clear()
+        self.finetuning_state.manual_matched_particles.clear()
+        self.finetuning_state.manual_errors.clear()
+        self._sync_manual_samples_to_state()
+        self._set_manual_status("Manual samples cleared", TEXT_SECONDARY)
+        self._update_manual_calibration_ui()
+
+    def apply_manual_calibration(self) -> bool:
+        """Apply calibration refinement using only manual samples."""
+        with self.manual_calibration_lock:
+            samples = list(self.manual_calibration_samples)
+
+        if len(samples) < 3:
+            logging.warning("Need at least three manual samples to compute calibration (have %d)", len(samples))
+            self._set_manual_status("Need ≥3 manual samples", STATUS_DISCONNECTED)
+            return False
+
+        current_config = self.slm_config_manager.get_current_config()
+        self.finetuning_state.base_config_name = current_config.name
+        self.finetuning_state.base_affine_params = self.slm_affine_params.copy()
+        self.finetuning_state.margin_pixels = 0.0
+        self.finetuning_state.total_samples = len(samples)
+        if self.image_state.latest_image_array is not None:
+            height, width = self.image_state.latest_image_array.shape[:2]
+            self.finetuning_state.sample_area_min_x = 0.0
+            self.finetuning_state.sample_area_min_y = 0.0
+            self.finetuning_state.sample_area_max_x = float(width)
+            self.finetuning_state.sample_area_max_y = float(height)
+
+        self._sync_manual_samples_to_state()
+        self._compute_refined_calibration(samples)
+        self._set_manual_status("Manual calibration saved", STATUS_CONNECTED)
+        return True
+    
+    def delete_finetuning_config(self, name: str) -> bool:
+        """Delete a fine-tuning configuration."""
+        return self.finetuning_manager.delete_result(name)
+    
+    def list_finetuning_configs(self) -> List[str]:
+        """List all fine-tuning configurations."""
+        configs = self.finetuning_manager.list_results()
+        logging.debug(f"list_finetuning_configs returned {len(configs)} configs: {configs}")
+        return configs
+    
+    def get_finetuning_metadata(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get metadata for a fine-tuning configuration."""
+        metadata = self.finetuning_manager.get_result_metadata(name)
+        logging.debug(f"get_finetuning_metadata for '{name}': {metadata}")
+        return metadata
 
     def shutdown(self) -> None:
         """Shutdown all connections."""
@@ -4478,6 +5504,216 @@ def _on_experiment_params_combo_changed(sender: int, app_data: Any, user_data: A
     pass
 
 
+# Fine-tuning callbacks
+
+def _on_finetuning_start(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle fine-tuning start button."""
+    controller = user_data
+    
+    logging.info("Fine-tuning start button clicked")
+    
+    if not controller.ui:
+        logging.error("No UI available")
+        return
+    
+    # Get parameters from inputs
+    sample_count = dpg.get_value(controller.ui.finetuning_samples_input) if controller.ui.finetuning_samples_input else 12
+    margin_pixels = dpg.get_value(controller.ui.finetuning_margin_input) if controller.ui.finetuning_margin_input else 50.0
+    
+    logging.info(f"Fine-tuning parameters: samples={sample_count}, margin={margin_pixels}")
+    logging.info(f"SLM connected: {controller.slm_client.connected}, Image connected: {controller.image_state.connected}")
+    
+    # Start fine-tuning
+    controller.start_finetuning(int(sample_count), float(margin_pixels))
+    
+    # Update button states only if fine-tuning actually started
+    if controller.finetuning_state.active:
+        if controller.ui.finetuning_start_button:
+            dpg.configure_item(controller.ui.finetuning_start_button, enabled=False)
+        if controller.ui.finetuning_pause_button:
+            dpg.configure_item(controller.ui.finetuning_pause_button, enabled=True)
+        if controller.ui.finetuning_stop_button:
+            dpg.configure_item(controller.ui.finetuning_stop_button, enabled=True)
+        logging.info("Fine-tuning started successfully")
+    else:
+        logging.warning("Fine-tuning did not start - check error messages above")
+
+
+def _on_finetuning_stop(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle fine-tuning stop button."""
+    controller = user_data
+    controller.stop_finetuning()
+    
+    if not controller.ui:
+        return
+    
+    # Update button states
+    if controller.ui.finetuning_start_button:
+        dpg.configure_item(controller.ui.finetuning_start_button, enabled=True)
+    if controller.ui.finetuning_pause_button:
+        dpg.configure_item(controller.ui.finetuning_pause_button, enabled=False)
+    if controller.ui.finetuning_stop_button:
+        dpg.configure_item(controller.ui.finetuning_stop_button, enabled=False)
+
+
+def _on_finetuning_pause(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle fine-tuning pause/resume button."""
+    controller = user_data
+    controller.pause_finetuning()
+    
+    if not controller.ui or not controller.ui.finetuning_pause_button:
+        return
+    
+    # Update button label
+    label = "Resume" if controller.finetuning_state.paused else "Pause"
+    dpg.configure_item(controller.ui.finetuning_pause_button, label=label)
+
+
+def _on_finetuning_visualization_toggled(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle fine-tuning visualization toggle."""
+    controller = user_data
+    controller.finetuning_state.show_visualization = bool(app_data)
+
+
+def _on_manual_calibration_capture(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    if controller.ui and controller.ui.manual_capture_button:
+        dpg.configure_item(controller.ui.manual_capture_button, enabled=False)
+
+    def worker() -> None:
+        try:
+            controller.capture_manual_calibration_sample()
+            controller._update_manual_calibration_ui()
+        finally:
+            if controller.ui and controller.ui.manual_capture_button:
+                dpg.configure_item(controller.ui.manual_capture_button, enabled=True)
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _on_manual_calibration_apply(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    if controller.apply_manual_calibration():
+        controller._update_manual_calibration_ui()
+
+
+def _on_manual_calibration_clear(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    controller = user_data
+    controller.clear_manual_calibration_samples()
+    controller._update_manual_calibration_ui()
+
+
+def _on_finetuning_config_load(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle loading a fine-tuning configuration."""
+    controller = user_data
+    
+    if not controller.ui or not controller.ui.finetuning_config_combo:
+        return
+    
+    config_name = dpg.get_value(controller.ui.finetuning_config_combo)
+    
+    if not config_name or config_name == "No fine-tuned configs":
+        return
+    
+    success = controller.load_finetuning_config(config_name)
+    
+    if success:
+        logging.info(f"Loaded fine-tuning config: {config_name}")
+        
+        # Update metadata display
+        _update_finetuning_metadata_display(controller)
+    else:
+        logging.error(f"Failed to load fine-tuning config: {config_name}")
+
+
+def _on_finetuning_config_delete(sender: int, app_data: Any, user_data: AggregateControllerStreaming) -> None:
+    """Handle deleting a fine-tuning configuration."""
+    controller = user_data
+    
+    if not controller.ui or not controller.ui.finetuning_config_combo:
+        return
+    
+    config_name = dpg.get_value(controller.ui.finetuning_config_combo)
+    
+    if not config_name or config_name == "No fine-tuned configs":
+        return
+    
+    # Confirmation dialog
+    with dpg.window(label="Delete Fine-Tuning Config", modal=True, tag="delete_finetuning_modal",
+                   width=350, height=120, pos=(450, 350)):
+        dpg.add_text(f"Delete '{config_name}'?")
+        dpg.add_spacing(count=2)
+        with dpg.group(horizontal=True):
+            dpg.add_button(
+                label="Delete",
+                callback=_confirm_finetuning_delete,
+                user_data=(controller, config_name),
+                width=100
+            )
+            dpg.add_button(
+                label="Cancel",
+                callback=lambda: dpg.delete_item("delete_finetuning_modal"),
+                width=100
+            )
+
+
+def _confirm_finetuning_delete(sender: int, app_data: Any, user_data: Tuple[AggregateControllerStreaming, str]) -> None:
+    """Confirm and delete fine-tuning configuration."""
+    controller, config_name = user_data
+    
+    success = controller.delete_finetuning_config(config_name)
+    
+    if success and controller.ui and controller.ui.finetuning_config_combo:
+        # Update combo box
+        configs = controller.list_finetuning_configs()
+        dpg.configure_item(
+            controller.ui.finetuning_config_combo,
+            items=configs if configs else ["No fine-tuned configs"],
+            default_value="No fine-tuned configs" if not configs else configs[0]
+        )
+        
+        # Clear metadata display
+        if controller.ui.finetuning_metadata_text:
+            dpg.set_value(controller.ui.finetuning_metadata_text, "")
+    
+    dpg.delete_item("delete_finetuning_modal")
+
+
+def _update_finetuning_metadata_display(controller: AggregateControllerStreaming) -> None:
+    """Update the fine-tuning metadata display."""
+    if not controller.ui or not controller.ui.finetuning_config_combo or not controller.ui.finetuning_metadata_text:
+        return
+    
+    config_name = dpg.get_value(controller.ui.finetuning_config_combo)
+    
+    if not config_name or config_name == "No fine-tuned configs":
+        dpg.set_value(controller.ui.finetuning_metadata_text, "")
+        return
+    
+    metadata = controller.get_finetuning_metadata(config_name)
+    
+    if metadata:
+        # Format timestamp
+        from datetime import datetime
+        try:
+            dt = datetime.fromisoformat(metadata['timestamp'])
+            time_str = dt.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            time_str = "Unknown"
+        
+        # Build metadata text
+        text = (
+            f"Created: {time_str}\n"
+            f"Base: {metadata['base_config']}\n"
+            f"Samples: {metadata['samples']}\n"
+            f"RMS Error: {metadata['rms_error_before']:.2f}px → {metadata['rms_error_after']:.2f}px\n"
+            f"Improvement: {metadata['improvement_pct']:.1f}%"
+        )
+        
+        dpg.set_value(controller.ui.finetuning_metadata_text, text)
+    else:
+        dpg.set_value(controller.ui.finetuning_metadata_text, "Metadata unavailable")
+
+
 def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Dict[str, str]) -> AggregateUI:
     """Create DearPyGui UI with responsive layout.
     
@@ -5699,6 +6935,150 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         
         dpg.add_separator()
         dpg.add_spacing(count=2)
+        dpg.add_text("AUTO FINE-TUNING", color=(255, 215, 0, 255))  # Gold color for special feature
+        dpg.add_text("Automatically refine calibration using tracked particles", color=TEXT_SECONDARY, wrap=360)
+        dpg.add_spacing(count=1)
+        
+        # Fine-tuning configuration display
+        finetuning_configs = controller.list_finetuning_configs()
+        finetuning_config_combo = dpg.add_combo(
+            label="Fine-Tuned Config",
+            items=finetuning_configs if finetuning_configs else ["No fine-tuned configs"],
+            default_value="No fine-tuned configs" if not finetuning_configs else finetuning_configs[0],
+            callback=_on_finetuning_config_load,
+            user_data=controller,
+            width=200
+        )
+        
+        dpg.add_spacing(count=1)
+        
+        # Metadata display
+        finetuning_metadata_text = dpg.add_text("", color=TEXT_SECONDARY, wrap=360)
+        
+        dpg.add_spacing(count=1)
+        with dpg.group(horizontal=True):
+            dpg.add_button(
+                label="Load Selected",
+                callback=_on_finetuning_config_load,
+                user_data=controller,
+                width=130
+            )
+            finetuning_config_delete_button = dpg.add_button(
+                label="Delete",
+                callback=_on_finetuning_config_delete,
+                user_data=controller,
+                width=80
+            )
+        
+        dpg.add_separator()
+        dpg.add_spacing(count=1)
+        dpg.add_text("NEW FINE-TUNING SESSION", color=(255, 215, 0, 255))
+        dpg.add_spacing(count=1)
+        
+        # Fine-tuning parameters
+        with dpg.group(horizontal=True):
+            dpg.add_text("Sample Count:", color=TEXT_PRIMARY)
+            finetuning_samples_input = dpg.add_input_int(
+                default_value=12,
+                min_value=3,
+                max_value=100,
+                min_clamped=True,
+                max_clamped=True,
+                width=80
+            )
+        
+        with dpg.group(horizontal=True):
+            dpg.add_text("Edge Margin (px):", color=TEXT_PRIMARY)
+            finetuning_margin_input = dpg.add_input_float(
+                default_value=50.0,
+                min_value=10.0,
+                max_value=200.0,
+                min_clamped=True,
+                max_clamped=True,
+                width=80
+            )
+        
+        finetuning_visualization_checkbox = dpg.add_checkbox(
+            label="Show Visualization",
+            default_value=True,
+            callback=_on_finetuning_visualization_toggled,
+            user_data=controller
+        )
+        
+        dpg.add_spacing(count=1)
+        
+        # Progress bar
+        finetuning_progress_bar = dpg.add_progress_bar(
+            default_value=0.0,
+            width=-1
+        )
+        
+        # Status text
+        finetuning_status_text = dpg.add_text("Ready to start", color=SLM_COLOR)
+        
+        dpg.add_spacing(count=1)
+        
+        # Control buttons
+        with dpg.group(horizontal=True):
+            finetuning_start_button = dpg.add_button(
+                label="Start",
+                callback=_on_finetuning_start,
+                user_data=controller,
+                width=120,
+                height=30
+            )
+            finetuning_pause_button = dpg.add_button(
+                label="Pause",
+                callback=_on_finetuning_pause,
+                user_data=controller,
+                width=80,
+                height=30,
+                enabled=False
+            )
+            finetuning_stop_button = dpg.add_button(
+                label="Stop",
+                callback=_on_finetuning_stop,
+                user_data=controller,
+                width=80,
+                height=30,
+                enabled=False
+            )
+        
+        dpg.add_spacing(count=1)
+        dpg.add_text("MANUAL CALIBRATION", color=(255, 215, 0, 255))
+        dpg.add_text(
+            "Capture manual trap↔particle pairs to refine calibration",
+            color=TEXT_SECONDARY,
+            wrap=360,
+        )
+        manual_sample_count_text = dpg.add_text("Manual samples: 0", color=TEXT_PRIMARY)
+        manual_status_text = dpg.add_text("", color=TEXT_SECONDARY, wrap=360)
+
+        with dpg.group(horizontal=True):
+            manual_capture_button = dpg.add_button(
+                label="Capture Sample",
+                callback=_on_manual_calibration_capture,
+                user_data=controller,
+                width=150,
+            )
+            manual_apply_button = dpg.add_button(
+                label="Apply Manual Calibration",
+                callback=_on_manual_calibration_apply,
+                user_data=controller,
+                width=220,
+                enabled=False,
+            )
+
+        manual_clear_button = dpg.add_button(
+            label="Clear Manual Samples",
+            callback=_on_manual_calibration_clear,
+            user_data=controller,
+            width=180,
+            enabled=False,
+        )
+
+        dpg.add_separator()
+        dpg.add_spacing(count=2)
         dpg.add_text("CIRCLE VISUALIZATION", color=SLM_COLOR)
         dpg.add_spacing(count=1)
         
@@ -5878,6 +7258,22 @@ def create_ui(controller: AggregateControllerStreaming, shtc3_display_labels: Di
         ui_config_load_button=ui_config_load_button,
         ui_config_set_default_button=ui_config_set_default_button,
         ui_config_delete_button=ui_config_delete_button,
+        finetuning_start_button=finetuning_start_button,
+        finetuning_stop_button=finetuning_stop_button,
+        finetuning_pause_button=finetuning_pause_button,
+        finetuning_progress_bar=finetuning_progress_bar,
+        finetuning_status_text=finetuning_status_text,
+        finetuning_margin_input=finetuning_margin_input,
+        finetuning_samples_input=finetuning_samples_input,
+        finetuning_visualization_checkbox=finetuning_visualization_checkbox,
+        finetuning_config_combo=finetuning_config_combo,
+        finetuning_config_delete_button=finetuning_config_delete_button,
+        finetuning_metadata_text=finetuning_metadata_text,
+    manual_sample_count_text=manual_sample_count_text,
+    manual_status_text=manual_status_text,
+    manual_capture_button=manual_capture_button,
+    manual_apply_button=manual_apply_button,
+    manual_clear_button=manual_clear_button,
         connection_window=connection_window,
         ui_config_window=ui_config_window,
         monitoring_window=monitoring_window,

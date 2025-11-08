@@ -1,0 +1,1592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Objective Temperature Controller</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/date-fns@2.30.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0"></script>
+    <style>
+        :root {
+            color-scheme: light;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #5865f2 0%, #8e64ff 100%);
+            min-height: 100vh;
+            padding: 24px;
+            color: #202124;
+        }
+
+        .container {
+            max-width: 1500px;
+            margin: 0 auto;
+            background: #fff;
+            border-radius: 18px;
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.22);
+            overflow: hidden;
+        }
+
+        header {
+            padding: 32px 40px;
+            background: linear-gradient(135deg, #5865f2 0%, #8e64ff 100%);
+            color: #fff;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2.4rem;
+            font-weight: 700;
+        }
+
+        header p {
+            margin: 8px 0 0;
+            font-size: 1rem;
+            opacity: 0.85;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 16px;
+            padding: 24px 32px;
+            background: #f4f5fb;
+            border-bottom: 1px solid #e4e6f1;
+        }
+
+        .status-card {
+            background: #fff;
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+        }
+
+        .status-card h3 {
+            margin: 0 0 6px;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: #6b7280;
+        }
+
+        .status-value {
+            font-size: 1.65rem;
+            font-weight: 700;
+            color: #3949ab;
+        }
+
+        .status-value .unit {
+            font-size: 0.8rem;
+            color: #6b7280;
+            margin-left: 4px;
+        }
+
+        .mode-heating {
+            color: #e74c3c;
+        }
+
+        .mode-cooling {
+            color: #00b894;
+        }
+
+        .mode-off {
+            color: #95a5a6;
+        }
+
+        .panel-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+            padding: 28px 32px 12px;
+        }
+
+        .panel {
+            background: #ffffff;
+            border-radius: 14px;
+            padding: 20px 22px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .panel h2 {
+            margin: 0;
+            font-size: 1.1rem;
+            color: #2c3e50;
+        }
+
+        .panel p {
+            margin: -6px 0 0;
+            font-size: 0.85rem;
+            color: #636e72;
+        }
+
+        .field-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+        }
+
+        label {
+            font-weight: 600;
+            color: #455a64;
+        }
+
+        input[type="number"], input[type="text"], select {
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 2px solid #d1d9e6;
+            font-size: 0.95rem;
+            min-width: 100px;
+            flex: 1;
+            transition: border-color 0.2s ease;
+        }
+
+        input[type="number"]:focus, input[type="text"]:focus, select:focus {
+            outline: none;
+            border-color: #5865f2;
+        }
+
+        button {
+            border: none;
+            border-radius: 10px;
+            padding: 10px 18px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            color: #fff;
+            background: linear-gradient(135deg, #5865f2, #8e64ff);
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        button:disabled {
+            background: linear-gradient(135deg, #c9cedb, #aeb4c7);
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 18px rgba(88, 101, 242, 0.28);
+        }
+
+        .button-secondary {
+            background: linear-gradient(135deg, #2ecc71, #27ae60);
+        }
+
+        .button-danger {
+            background: linear-gradient(135deg, #ff7675, #d63031);
+        }
+
+        .control-hint {
+            font-size: 0.8rem;
+            color: #6c6f82;
+        }
+
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .preset-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .preset-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: 260px;
+            overflow-y: auto;
+            margin-top: 10px;
+        }
+
+        .preset-row {
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            gap: 12px;
+            align-items: center;
+            background: #f6f7ff;
+            border-radius: 10px;
+            padding: 10px 12px;
+            border: 1px solid transparent;
+        }
+
+        .preset-row:hover {
+            border-color: rgba(88, 101, 242, 0.35);
+        }
+
+        .preset-name {
+            font-weight: 600;
+            color: #2d3436;
+        }
+
+        .preset-meta {
+            font-size: 0.75rem;
+            color: #636e72;
+        }
+
+        .diagnostics {
+            background: #fafbff;
+            padding: 18px 32px 28px;
+            border-top: 1px solid #e8ebfa;
+        }
+
+        .diagnostics h2 {
+            margin: 0 0 12px;
+            color: #2c3e50;
+        }
+
+        .diag-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            gap: 14px;
+        }
+
+        .diag-card {
+            background: #fff;
+            border-radius: 12px;
+            padding: 14px;
+            box-shadow: 0 3px 12px rgba(0, 0, 0, 0.06);
+        }
+
+        .diag-card h4 {
+            margin: 0;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #6c7080;
+        }
+
+        .diag-value {
+            margin-top: 6px;
+            font-weight: 600;
+            font-size: 1.2rem;
+            color: #1f3c88;
+        }
+
+        .diag-notes {
+            grid-column: 1 / -1;
+            font-size: 0.9rem;
+            color: #5f6368;
+        }
+
+        .charts {
+            padding: 16px 32px 28px;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 24px;
+        }
+
+        .chart-container {
+            background: #ffffff;
+            border-radius: 14px;
+            padding: 18px 20px 22px;
+            box-shadow: 0 6px 22px rgba(0, 0, 0, 0.08);
+        }
+
+        .chart-container h3 {
+            margin: 0 0 10px;
+            color: #2c3e50;
+        }
+
+        canvas {
+            max-height: 320px;
+        }
+
+        .footer {
+            padding: 12px 32px 24px;
+            background: #f4f5fb;
+            color: #636e72;
+            font-size: 0.85rem;
+        }
+
+        .empty-state {
+            font-size: 0.9rem;
+            color: #7f8c8d;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 12px;
+            }
+
+            header, .status-grid, .panel-grid, .diagnostics, .charts, .footer {
+                padding-left: 18px;
+                padding-right: 18px;
+            }
+
+            .panel-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Objective Temperature Controller</h1>
+            <p>Monitor, tune, and understand how the control system responds in real time.</p>
+        </header>
+
+        <section class="status-grid">
+            <div class="status-card">
+                <h3>Objective Temperature</h3>
+                <div class="status-value" id="obj-temp">--</div>
+            </div>
+            <div class="status-card">
+                <h3>Setpoint</h3>
+                <div class="status-value" id="setpoint">--</div>
+            </div>
+            <div class="status-card">
+                <h3>Room Temperature</h3>
+                <div class="status-value" id="room-temp">--</div>
+            </div>
+            <div class="status-card">
+                <h3>Humidity</h3>
+                <div class="status-value" id="humidity">--</div>
+            </div>
+            <div class="status-card">
+                <h3>Controller Mode</h3>
+                <div class="status-value" id="mode">--</div>
+            </div>
+            <div class="status-card">
+                <h3>Control Source</h3>
+                <div class="status-value" id="control-source">--</div>
+            </div>
+            <div class="status-card">
+                <h3>Manual Direction</h3>
+                <div class="status-value" id="manual-direction">--</div>
+            </div>
+            <div class="status-card">
+                <h3>Manual PWM</h3>
+                <div class="status-value" id="manual-pwm">--</div>
+            </div>
+            <div class="status-card">
+                <h3>Total PWM</h3>
+                <div class="status-value" id="pwm">--</div>
+            </div>
+            <div class="status-card">
+                <h3>Feedback PWM</h3>
+                <div class="status-value" id="pwm-feedback">--</div>
+            </div>
+            <div class="status-card">
+                <h3>Temp Rate</h3>
+                <div class="status-value" id="temp-rate">--</div>
+            </div>
+        </section>
+
+        <section class="panel-grid">
+            <div class="panel">
+                <h2>Quick Actions</h2>
+                <div class="field-row">
+                    <button id="pid-toggle-btn" onclick="togglePID()">▶️ Run PID</button>
+                    <span id="pid-status" class="control-hint" style="font-weight: 700; color: #999;">STANDBY</span>
+                </div>
+                <div class="field-row">
+                    <label for="setpoint-input">Setpoint (°C)</label>
+                    <input type="number" id="setpoint-input" step="0.1" min="10" max="40" value="25.0">
+                    <button onclick="updateSetpoint()">Update</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Temperature Calibration</h2>
+                <p class="control-hint">Apply offsets to correct sensor bias.</p>
+                <div class="field-row">
+                    <label for="obj-offset-input">Objective Offset (°C)</label>
+                    <input type="number" id="obj-offset-input" step="0.01" value="0.00">
+                </div>
+                <div class="field-row">
+                    <label for="amb-offset-input">Ambient Offset (°C)</label>
+                    <input type="number" id="amb-offset-input" step="0.01" value="0.00">
+                </div>
+                <div class="field-row">
+                    <button onclick="applyOffsets()">Apply Offsets</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Core Controller Gains</h2>
+                <div class="field-row">
+                    <label for="kp-input">Kp</label>
+                    <input type="number" id="kp-input" step="0.001" min="0" max="1" value="0.05">
+                </div>
+                <div class="field-row">
+                    <label for="ki-input">Ki</label>
+                    <input type="number" id="ki-input" step="0.0001" min="0" max="1" value="0.01">
+                </div>
+                <div class="field-row">
+                    <label for="interval-input">Control Interval (s)</label>
+                    <input type="number" id="interval-input" step="0.05" min="0.1" max="10" value="0.2">
+                </div>
+                <div class="field-row">
+                    <label for="deadband-input">Deadband (°C)</label>
+                    <input type="number" id="deadband-input" step="0.05" min="0" max="2" value="0.1">
+                </div>
+                <div class="field-row">
+                    <label for="mode-delay-input">Mode Delay (s)</label>
+                    <input type="number" id="mode-delay-input" step="1" min="0" max="180" value="15">
+                </div>
+                <div class="field-row">
+                    <label for="ma-window-input">MA Window (samples)</label>
+                    <input type="number" id="ma-window-input" step="1" min="1" max="600" value="30">
+                </div>
+                <div class="field-row">
+                    <label for="heating-cap-input">Heating PWM Cap</label>
+                    <input type="number" id="heating-cap-input" step="0.01" min="0" max="0.4" value="0.2">
+                </div>
+                <div class="field-row">
+                    <label for="cooling-cap-input">Cooling PWM Cap</label>
+                    <input type="number" id="cooling-cap-input" step="0.01" min="0" max="0.4" value="0.2">
+                </div>
+                <div class="checkbox-row">
+                    <input type="checkbox" id="invert-dir-input">
+                    <label for="invert-dir-input">Invert Direction</label>
+                </div>
+                <div class="field-row">
+                    <button onclick="updateParams()">Apply Core Settings</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Mode-Specific Gains</h2>
+                <div class="field-row">
+                    <label for="kp-heating-input">Kp Heating</label>
+                    <input type="number" id="kp-heating-input" step="0.001" min="0" max="1" value="0.05">
+                </div>
+                <div class="field-row">
+                    <label for="kp-cooling-input">Kp Cooling</label>
+                    <input type="number" id="kp-cooling-input" step="0.001" min="0" max="1" value="0.05">
+                </div>
+                <div class="field-row">
+                    <label for="ki-heating-input">Ki Heating</label>
+                    <input type="number" id="ki-heating-input" step="0.0001" min="0" max="1" value="0.01">
+                </div>
+                <div class="field-row">
+                    <label for="ki-cooling-input">Ki Cooling</label>
+                    <input type="number" id="ki-cooling-input" step="0.0001" min="0" max="1" value="0.01">
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Advanced Shaping</h2>
+                <p class="control-hint">Tune near-setpoint behavior and predictive braking.</p>
+                <div class="field-row">
+                    <label for="near-threshold-input">Near-Setpoint Threshold (°C)</label>
+                    <input type="number" id="near-threshold-input" step="0.05" min="0.2" max="5" value="0.6">
+                </div>
+                <div class="field-row">
+                    <label for="overshoot-guard-input">Overshoot Guard (°C)</label>
+                    <input type="number" id="overshoot-guard-input" step="0.01" min="0.05" max="1.5" value="0.2">
+                </div>
+                <div class="field-row">
+                    <label for="pwm-near-cap-input">PWM Cap Near Setpoint</label>
+                    <input type="number" id="pwm-near-cap-input" step="0.01" min="0" max="0.4" value="0.1">
+                </div>
+                <div class="field-row">
+                    <label for="pred-brake-band-input">Predictive Brake Band (°C)</label>
+                    <input type="number" id="pred-brake-band-input" step="0.01" min="0.02" max="0.5" value="0.05">
+                </div>
+                <div class="field-row">
+                    <label for="trend-threshold-input">Trend Brake Threshold (°C/s)</label>
+                    <input type="number" id="trend-threshold-input" step="0.0005" min="0" max="0.05" value="0.003">
+                </div>
+                <div class="field-row">
+                    <label for="integral-bleed-input">Integral Bleed Rate</label>
+                    <input type="number" id="integral-bleed-input" step="0.001" min="0" max="1" value="0.05">
+                </div>
+                <div class="field-row">
+                    <label for="trend-damping-input">Trend Damping Gain</label>
+                    <input type="number" id="trend-damping-input" step="0.01" min="0" max="1" value="0.25">
+                </div>
+            </div>
+
+            <div class="panel" id="manual-panel">
+                <h2>Manual Override</h2>
+                <p class="control-hint">Unlock to take direct control. Manual output overrides PID while enabled.</p>
+                <div class="field-row">
+                    <button id="manual-lock-btn" onclick="toggleManualLock()">🔒 Unlock Manual Override</button>
+                    <span id="manual-lock-status" class="control-hint" style="font-weight: 700; color: #c0392b;">LOCKED</span>
+                </div>
+                <div class="field-row">
+                    <button id="manual-enable-btn" onclick="toggleManualOverride()" disabled>Enable Manual Override</button>
+                </div>
+                <div class="field-row">
+                    <label for="manual-mode-select">Direction</label>
+                    <select id="manual-mode-select" disabled>
+                        <option value="OFF">OFF</option>
+                        <option value="HEATING">HEATING (logical)</option>
+                        <option value="COOLING">COOLING (logical)</option>
+                        <option value="HIGH">RAW HIGH</option>
+                        <option value="LOW">RAW LOW</option>
+                    </select>
+                </div>
+                <div class="field-row">
+                    <label for="manual-pwm-input">PWM</label>
+                    <input type="number" id="manual-pwm-input" step="0.001" min="0" max="0.4" value="0.000" disabled>
+                </div>
+                <div class="field-row">
+                    <button id="manual-apply-btn" onclick="applyManualCommand()" disabled>Apply Manual Command</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Adaptive Feedforward</h2>
+                <p class="control-hint">Learns steady-state PWM required to hold setpoint.</p>
+                <div class="field-row">
+                    <button id="adaptive-toggle-btn" onclick="toggleAdaptiveFF()">Disable Learning</button>
+                    <span id="adaptive-status" class="control-hint" style="font-weight: 700; color: #27ae60;">ENABLED</span>
+                </div>
+                <div class="field-row">
+                    <button class="button-secondary" onclick="resetLearnedBaselines()">Reset Learned Values</button>
+                </div>
+                <div class="field-row">
+                    <label for="learning-rate-input">Learning Rate</label>
+                    <input type="number" id="learning-rate-input" step="0.01" min="0.001" max="0.5" value="0.05">
+                </div>
+                <div class="field-row">
+                    <label for="learning-error-thresh-input">Error Threshold (°C)</label>
+                    <input type="number" id="learning-error-thresh-input" step="0.01" min="0.05" max="1.0" value="0.15">
+                </div>
+                <div class="field-row">
+                    <label for="learning-rate-thresh-input">Rate Threshold (°C/s)</label>
+                    <input type="number" id="learning-rate-thresh-input" step="0.001" min="0.0001" max="0.1" value="0.005">
+                </div>
+                <div class="field-row">
+                    <label for="learning-min-time-input">Min Stable Time (s)</label>
+                    <input type="number" id="learning-min-time-input" step="5" min="5" max="600" value="30">
+                </div>
+                <div class="field-row">
+                    <button onclick="updateLearningParams()">Update Learning Params</button>
+                </div>
+                <div class="control-hint">
+                    <div>Heating baseline: <span id="learned-heating-pwm">--</span> (<span id="learned-heating-samples">0 samples</span>)</div>
+                    <div>Cooling baseline: <span id="learned-cooling-pwm">--</span> (<span id="learned-cooling-samples">0 samples</span>)</div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Preset Manager</h2>
+                <p class="control-hint">Save, load, or delete complete controller configurations.</p>
+                <div class="preset-header">
+                    <input type="text" id="preset-name-input" placeholder="Preset name">
+                    <label class="checkbox-row" style="flex: none;">
+                        <input type="checkbox" id="preset-apply-checkbox" checked>
+                        <span class="control-hint">Apply when loading</span>
+                    </label>
+                    <button onclick="savePreset()">Save</button>
+                </div>
+                <div id="preset-status" class="control-hint"></div>
+                <div class="preset-list" id="preset-list">
+                    <p class="empty-state">No presets saved yet.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="diagnostics">
+            <h2>Controller Thinking</h2>
+            <div class="diag-grid">
+                <div class="diag-card">
+                    <h4>Ambient Feedforward</h4>
+                    <div class="diag-value" id="diag-ambient-ff">--</div>
+                </div>
+                <div class="diag-card">
+                    <h4>Adaptive Feedforward</h4>
+                    <div class="diag-value" id="diag-adaptive-ff">--</div>
+                </div>
+                <div class="diag-card">
+                    <h4>Baseline PWM</h4>
+                    <div class="diag-value" id="diag-baseline">--</div>
+                </div>
+                <div class="diag-card">
+                    <h4>Feedback PWM</h4>
+                    <div class="diag-value" id="diag-feedback">--</div>
+                </div>
+                <div class="diag-card">
+                    <h4>P Term</h4>
+                    <div class="diag-value" id="diag-p-term">--</div>
+                </div>
+                <div class="diag-card">
+                    <h4>I Term</h4>
+                    <div class="diag-value" id="diag-i-term">--</div>
+                </div>
+                <div class="diag-card">
+                    <h4>PWM Limit</h4>
+                    <div class="diag-value" id="diag-pwm-limit">--</div>
+                </div>
+                <div class="diag-card">
+                    <h4>Temp Trend (°C/s)</h4>
+                    <div class="diag-value" id="diag-trend">--</div>
+                </div>
+                <div class="diag-card">
+                    <h4>Effective Kp</h4>
+                    <div class="diag-value" id="diag-kp">--</div>
+                </div>
+                <div class="diag-card">
+                    <h4>Effective Ki</h4>
+                    <div class="diag-value" id="diag-ki">--</div>
+                </div>
+                <div class="diag-card diag-notes">
+                    <h4>Notes</h4>
+                    <div class="diag-value" id="diag-notes" style="font-size: 0.95rem; font-weight: 500;">--</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="charts">
+            <div class="chart-container">
+                <h3>Temperature vs Time</h3>
+                <canvas id="tempChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <h3>Control Output vs Time</h3>
+                <canvas id="controlChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <h3>Control Contributions</h3>
+                <canvas id="componentChart"></canvas>
+            </div>
+        </section>
+
+        <div class="footer">
+            Last update: <span id="last-update">Never</span>
+        </div>
+    </div>
+
+    <script>
+        const UPDATE_INTERVAL = 1000;
+        const MAX_DATA_POINTS = 600;
+
+        let tempChart;
+        let controlChart;
+        let componentChart;
+        let manualStatus = { locked: true, enabled: false, direction: "OFF", pwm: 0, requestedDirection: "OFF" };
+        let presetCache = [];
+
+        function formatValue(value, digits = 2, unit = "") {
+            if (value === null || value === undefined || Number.isNaN(value)) {
+                return "--";
+            }
+            return `${value.toFixed(digits)}${unit}`;
+        }
+
+        function classifyMode(value) {
+            if (!value) return "mode-off";
+            const token = value.toUpperCase();
+            if (token === "HEATING") return "mode-heating";
+            if (token === "COOLING") return "mode-cooling";
+            return "mode-off";
+        }
+
+        function initCharts() {
+            const tempCtx = document.getElementById('tempChart').getContext('2d');
+            tempChart = new Chart(tempCtx, {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Objective Temperature',
+                            data: [],
+                            borderColor: '#5865f2',
+                            backgroundColor: 'rgba(88,101,242,0.12)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            tension: 0.35,
+                        },
+                        {
+                            label: 'Setpoint',
+                            data: [],
+                            borderColor: '#ff7675',
+                            borderDash: [6, 6],
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            fill: false,
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { unit: 'minute', tooltipFormat: 'HH:mm:ss' },
+                        },
+                        y: {
+                            title: { display: true, text: 'Temperature (°C)' }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: true, position: 'top' }
+                    }
+                }
+            });
+
+            const controlCtx = document.getElementById('controlChart').getContext('2d');
+            controlChart = new Chart(controlCtx, {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Total PWM',
+                            data: [],
+                            borderColor: '#00b894',
+                            backgroundColor: 'rgba(0,184,148,0.12)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'Feedback PWM',
+                            data: [],
+                            borderColor: '#845ef7',
+                            backgroundColor: 'rgba(132,94,247,0.12)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'Mode (Heat=1 Off=0 Cool=-1)',
+                            data: [],
+                            borderColor: '#636e72',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            stepped: true,
+                            yAxisID: 'y1',
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { unit: 'minute', tooltipFormat: 'HH:mm:ss' }
+                        },
+                        y: {
+                            position: 'left',
+                            title: { display: true, text: 'PWM (0-0.4)' },
+                            min: 0,
+                            max: 0.45,
+                        },
+                        y1: {
+                            position: 'right',
+                            min: -1.5,
+                            max: 1.5,
+                            grid: { drawOnChartArea: false },
+                        }
+                    },
+                    plugins: {
+                        legend: { display: true, position: 'top' }
+                    }
+                }
+            });
+
+            const componentCtx = document.getElementById('componentChart').getContext('2d');
+            componentChart = new Chart(componentCtx, {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Ambient FF',
+                            data: [],
+                            borderColor: '#00cec9',
+                            backgroundColor: 'rgba(0,206,201,0.12)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                        },
+                        {
+                            label: 'Adaptive FF',
+                            data: [],
+                            borderColor: '#0984e3',
+                            backgroundColor: 'rgba(9,132,227,0.12)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                        },
+                        {
+                            label: 'Combined Baseline',
+                            data: [],
+                            borderColor: '#fdcb6e',
+                            backgroundColor: 'rgba(253,203,110,0.12)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                        },
+                        {
+                            label: 'Feedback PWM',
+                            data: [],
+                            borderColor: '#d63031',
+                            backgroundColor: 'rgba(214,48,49,0.12)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                        },
+                        {
+                            label: 'P Term',
+                            data: [],
+                            borderColor: '#6c5ce7',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            borderDash: [6, 6],
+                        },
+                        {
+                            label: 'I Term',
+                            data: [],
+                            borderColor: '#2d3436',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            borderDash: [3, 6],
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { unit: 'minute', tooltipFormat: 'HH:mm:ss' }
+                        },
+                        y: {
+                            title: { display: true, text: 'PWM Contributions' },
+                            min: -0.05,
+                            max: 0.45,
+                        }
+                    },
+                    plugins: {
+                        legend: { display: true, position: 'top' }
+                    }
+                }
+            });
+        }
+
+        function describeManualDirection(direction) {
+            if (!direction) return '--';
+            const token = String(direction).toUpperCase();
+            if (token === 'HIGH') return 'RAW HIGH';
+            if (token === 'LOW') return 'RAW LOW';
+            if (token === 'OFF') return 'OFF';
+            return token;
+        }
+
+        function updateManualControls() {
+            const lockBtn = document.getElementById('manual-lock-btn');
+            const enableBtn = document.getElementById('manual-enable-btn');
+            const modeSelect = document.getElementById('manual-mode-select');
+            const pwmInput = document.getElementById('manual-pwm-input');
+            const applyBtn = document.getElementById('manual-apply-btn');
+            const lockStatus = document.getElementById('manual-lock-status');
+            if (!lockBtn || !enableBtn || !modeSelect || !pwmInput || !applyBtn || !lockStatus) {
+                return;
+            }
+
+            if (manualStatus.locked) {
+                lockBtn.textContent = '🔒 Unlock Manual Override';
+                lockStatus.textContent = 'LOCKED';
+                lockStatus.style.color = '#c0392b';
+                enableBtn.disabled = true;
+                modeSelect.disabled = true;
+                pwmInput.disabled = true;
+                applyBtn.disabled = true;
+                enableBtn.style.background = 'linear-gradient(135deg, #c9cedb, #aeb4c7)';
+            } else {
+                lockBtn.textContent = '🔓 Lock Manual Override';
+                lockStatus.textContent = manualStatus.enabled ? 'UNLOCKED • ACTIVE' : 'UNLOCKED';
+                lockStatus.style.color = manualStatus.enabled ? '#27ae60' : '#2d3436';
+                enableBtn.disabled = false;
+                modeSelect.disabled = false;
+                pwmInput.disabled = false;
+                applyBtn.disabled = false;
+                enableBtn.style.background = manualStatus.enabled
+                    ? 'linear-gradient(135deg, #ff7675, #d63031)'
+                    : 'linear-gradient(135deg, #f39c12, #f1c40f)';
+            }
+
+            enableBtn.textContent = manualStatus.enabled ? 'Disable Manual Override' : 'Enable Manual Override';
+            enableBtn.style.color = '#fff';
+
+            const modeSelectHasFocus = document.activeElement === modeSelect;
+            const pwmInputHasFocus = document.activeElement === pwmInput;
+            const controlsEnabled = !modeSelect.disabled && !pwmInput.disabled;
+
+            if (!modeSelectHasFocus) {
+                const options = [...modeSelect.options].map(opt => opt.value);
+                let selectValue = manualStatus.requestedDirection ? manualStatus.requestedDirection.toUpperCase() : 'OFF';
+                if (!options.includes(selectValue)) {
+                    const fallback = manualStatus.direction ? manualStatus.direction.toUpperCase() : 'OFF';
+                    selectValue = options.includes(fallback) ? fallback : 'OFF';
+                }
+                modeSelect.value = selectValue;
+            }
+
+            if (!pwmInputHasFocus) {
+                const shouldPreserve = controlsEnabled && pwmInput.value && pwmInput.value !== '0.000' && pwmInput.value !== '';
+                if (!shouldPreserve) {
+                    const pwmValue = typeof manualStatus.pwm === 'number' ? manualStatus.pwm : 0;
+                    pwmInput.value = pwmValue.toFixed(3);
+                }
+            }
+        }
+
+        async function loadManualStatus() {
+            try {
+                const response = await fetch('/api/manual/status', { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                const modeSelect = document.getElementById('manual-mode-select');
+                const pwmInput = document.getElementById('manual-pwm-input');
+                const userEditing = document.activeElement === modeSelect || document.activeElement === pwmInput;
+                const controlsEnabled = !modeSelect?.disabled && !pwmInput?.disabled;
+
+                manualStatus.locked = Boolean(data.locked);
+                manualStatus.enabled = Boolean(data.enabled);
+                if (!userEditing || !controlsEnabled || manualStatus.enabled) {
+                    manualStatus.direction = data.direction || manualStatus.direction;
+                    manualStatus.pwm = typeof data.pwm === 'number' ? data.pwm : manualStatus.pwm;
+                    manualStatus.requestedDirection = data.requested_direction || manualStatus.requestedDirection;
+                }
+                updateManualControls();
+            } catch (error) {
+                console.error('Error loading manual status:', error);
+            }
+        }
+
+        async function toggleManualLock() {
+            const endpoint = manualStatus.locked ? '/api/manual/unlock' : '/api/manual/lock';
+            try {
+                const response = await fetch(endpoint, { cache: 'no-store' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                manualStatus.locked = Boolean(data.locked);
+                manualStatus.enabled = Boolean(data.enabled);
+                manualStatus.direction = data.direction || manualStatus.direction;
+                manualStatus.pwm = typeof data.pwm === 'number' ? data.pwm : manualStatus.pwm;
+                manualStatus.requestedDirection = data.requested_direction || manualStatus.requestedDirection;
+                updateManualControls();
+                if (data.message) alert(data.message);
+            } catch (error) {
+                console.error('Error toggling manual lock:', error);
+                alert('Failed to toggle manual override lock');
+            }
+        }
+
+        async function toggleManualOverride() {
+            const endpoint = manualStatus.enabled ? '/api/manual/disable' : '/api/manual/enable';
+            try {
+                const response = await fetch(endpoint, { cache: 'no-store' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                manualStatus.locked = Boolean(data.locked);
+                manualStatus.enabled = Boolean(data.enabled);
+                manualStatus.direction = data.direction || manualStatus.direction;
+                manualStatus.pwm = typeof data.pwm === 'number' ? data.pwm : manualStatus.pwm;
+                manualStatus.requestedDirection = data.requested_direction || manualStatus.requestedDirection;
+                updateManualControls();
+                if (data.message) alert(data.message);
+                await loadPIDStatus();
+            } catch (error) {
+                console.error('Error toggling manual override:', error);
+                alert('Failed to toggle manual override');
+            }
+        }
+
+        async function applyManualCommand() {
+            const modeSelect = document.getElementById('manual-mode-select');
+            const pwmInput = document.getElementById('manual-pwm-input');
+            if (!modeSelect || !pwmInput) return;
+            const direction = modeSelect.value;
+            let pwmValue = parseFloat(pwmInput.value);
+            if (Number.isNaN(pwmValue)) {
+                alert('Invalid PWM value');
+                return;
+            }
+            pwmValue = Math.min(Math.max(pwmValue, 0), 0.4);
+            pwmInput.value = pwmValue.toFixed(3);
+
+            try {
+                const response = await fetch(`/api/manual/set?direction=${encodeURIComponent(direction)}&pwm=${pwmValue}`, { cache: 'no-store' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                manualStatus.locked = Boolean(data.locked);
+                manualStatus.enabled = Boolean(data.enabled);
+                manualStatus.direction = data.direction || direction;
+                manualStatus.pwm = typeof data.pwm === 'number' ? data.pwm : pwmValue;
+                manualStatus.requestedDirection = data.requested_direction || direction;
+                updateManualControls();
+                alert(data.message || 'Manual command applied');
+            } catch (error) {
+                console.error('Error applying manual command:', error);
+                alert('Failed to apply manual command');
+            }
+        }
+
+        function updateStatus(data) {
+            try {
+                const setValue = (id, formatted, unit = '') => {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    if (formatted === '--') {
+                        el.innerHTML = formatted;
+                    } else if (unit) {
+                        el.innerHTML = `${formatted}<span class="unit">${unit}</span>`;
+                    } else {
+                        el.textContent = formatted;
+                    }
+                };
+
+                setValue('obj-temp', formatValue(data.objective_temp, 2), '°C');
+                setValue('setpoint', formatValue(data.setpoint, 2), '°C');
+                setValue('room-temp', formatValue(data.room_temp, 2), '°C');
+                setValue('humidity', formatValue(data.humidity, 1), '%RH');
+
+                const modeElement = document.getElementById('mode');
+                if (modeElement) {
+                    modeElement.textContent = data.mode || '--';
+                    modeElement.className = `status-value ${classifyMode(data.mode)}`.trim();
+                }
+
+                const totalPwm = typeof data.pwm === 'number' ? data.pwm : null;
+                setValue('pwm', totalPwm !== null ? totalPwm.toFixed(3) : '--');
+                const feedbackPwm = typeof data.pwm_feedback === 'number' ? data.pwm_feedback : totalPwm;
+                setValue('pwm-feedback', feedbackPwm !== null ? feedbackPwm.toFixed(3) : '--');
+                const tempRate = typeof data.temp_rate === 'number' ? data.temp_rate : null;
+                setValue('temp-rate', tempRate !== null ? tempRate.toFixed(3) : '--', '°C/s');
+
+                const controlSourceElement = document.getElementById('control-source');
+                if (controlSourceElement) {
+                    controlSourceElement.textContent = data.control_source || (data.pid_enabled ? 'PID' : 'IDLE');
+                }
+
+                const manualDirElement = document.getElementById('manual-direction');
+                if (manualDirElement) {
+                    if (data.manual_override) {
+                        const requestedDir = (data.manual_requested_direction || data.manual_direction || '').toUpperCase();
+                        const rawDir = (data.manual_direction || '').toUpperCase();
+                        let label = describeManualDirection(requestedDir || rawDir || '');
+                        const rawLabel = describeManualDirection(rawDir || '');
+                        if (requestedDir && rawDir && requestedDir !== rawDir && rawDir !== '') {
+                            label = `${label} (${rawLabel})`;
+                        }
+                        manualDirElement.textContent = label;
+                    } else {
+                        manualDirElement.textContent = '--';
+                    }
+                }
+
+                const manualPwmElement = document.getElementById('manual-pwm');
+                if (manualPwmElement) {
+                    const manualPwmValue = typeof data.manual_pwm === 'number' ? data.manual_pwm : null;
+                    if (data.manual_override && manualPwmValue !== null) {
+                        manualPwmElement.textContent = manualPwmValue.toFixed(3);
+                    } else {
+                        manualPwmElement.textContent = '--';
+                    }
+                }
+
+                if (typeof data.manual_override_locked === 'boolean') manualStatus.locked = data.manual_override_locked;
+                if (typeof data.manual_override === 'boolean') manualStatus.enabled = data.manual_override;
+                updateManualControls();
+
+                const details = data.pi_details || {};
+                const diagUpdates = [
+                    ['diag-ambient-ff', details.ambient_ff_pwm, 4],
+                    ['diag-adaptive-ff', details.adaptive_ff_pwm, 4],
+                    ['diag-baseline', details.combined_baseline_pwm, 4],
+                    ['diag-feedback', details.feedback_pwm, 4],
+                    ['diag-p-term', details.p_term, 4],
+                    ['diag-i-term', details.i_term, 4],
+                    ['diag-pwm-limit', details.pwm_limit, 4],
+                    ['diag-trend', details.trend, 4],
+                    ['diag-kp', details.kp_effective, 4],
+                    ['diag-ki', details.ki_effective, 4],
+                ];
+                for (const [id, value, digits] of diagUpdates) {
+                    const element = document.getElementById(id);
+                    if (element) element.textContent = formatValue(value, digits);
+                }
+                const notesElement = document.getElementById('diag-notes');
+                if (notesElement) {
+                    notesElement.textContent = details.notes || '--';
+                }
+
+                document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+            } catch (error) {
+                console.error('Error updating status:', error);
+            }
+        }
+
+        function pushDatasetPoint(dataset, timestamp, value) {
+            dataset.data.push({ x: timestamp, y: value });
+            if (dataset.data.length > MAX_DATA_POINTS) {
+                dataset.data.shift();
+            }
+        }
+
+        function updateCharts(data) {
+            const timestamp = new Date(data.timestamp || Date.now());
+
+            if (data.objective_temp !== null && data.objective_temp !== undefined) {
+                pushDatasetPoint(tempChart.data.datasets[0], timestamp, data.objective_temp);
+            } else {
+                pushDatasetPoint(tempChart.data.datasets[0], timestamp, null);
+            }
+            pushDatasetPoint(tempChart.data.datasets[1], timestamp, data.setpoint);
+
+            const totalPwm = typeof data.pwm === 'number' ? data.pwm : null;
+            const feedbackPwm = typeof data.pwm_feedback === 'number' ? data.pwm_feedback : totalPwm;
+            pushDatasetPoint(controlChart.data.datasets[0], timestamp, totalPwm);
+            pushDatasetPoint(controlChart.data.datasets[1], timestamp, feedbackPwm);
+            let modeValue = 0;
+            if (data.mode === 'HEATING') modeValue = 1;
+            else if (data.mode === 'COOLING') modeValue = -1;
+            else if (data.mode === 'MANUAL') {
+                const dir = (data.manual_direction || '').toUpperCase();
+                if (dir === 'HIGH') modeValue = 1;
+                else if (dir === 'LOW') modeValue = -1;
+            }
+            pushDatasetPoint(controlChart.data.datasets[2], timestamp, modeValue);
+
+            const details = data.pi_details || {};
+            const componentValues = [
+                details.ambient_ff_pwm,
+                details.adaptive_ff_pwm,
+                details.combined_baseline_pwm,
+                details.feedback_pwm,
+                details.p_term,
+                details.i_term,
+            ];
+            componentChart.data.datasets.forEach((dataset, index) => {
+                const val = componentValues[index];
+                pushDatasetPoint(dataset, timestamp, val === null || val === undefined ? null : val);
+            });
+
+            tempChart.update('none');
+            controlChart.update('none');
+            componentChart.update('none');
+        }
+
+        async function loadHistoricalData() {
+            try {
+                const response = await fetch('/api/history', { cache: 'no-store' });
+                if (!response.ok) return;
+                const data = await response.json();
+                if (!data.data || !data.data.length) return;
+                const recentData = data.data.slice(-MAX_DATA_POINTS);
+                tempChart.data.datasets.forEach(dataset => dataset.data = []);
+                controlChart.data.datasets.forEach(dataset => dataset.data = []);
+                componentChart.data.datasets.forEach(dataset => dataset.data = []);
+                recentData.forEach(point => updateCharts(point));
+                tempChart.update();
+                controlChart.update();
+                componentChart.update();
+            } catch (error) {
+                console.error('Error loading historical data:', error);
+            }
+        }
+
+        async function fetchCurrentData() {
+            try {
+                const response = await fetch('/api/current', { cache: 'no-store' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                updateStatus(data);
+                updateCharts(data);
+            } catch (error) {
+                console.error('Error fetching current data:', error);
+            }
+        }
+
+        async function updateSetpoint() {
+            const input = document.getElementById('setpoint-input');
+            const value = parseFloat(input.value);
+            if (Number.isNaN(value)) {
+                alert('Invalid setpoint value');
+                return;
+            }
+            try {
+                const response = await fetch(`/api/setpoint?value=${value}`, { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'Failed to update setpoint');
+                alert(data.message || 'Setpoint updated');
+                await loadParameters();
+            } catch (error) {
+                console.error('Error updating setpoint:', error);
+                alert('Failed to update setpoint');
+            }
+        }
+
+        async function applyOffsets() {
+            const objOffset = parseFloat(document.getElementById('obj-offset-input').value) || 0;
+            const ambOffset = parseFloat(document.getElementById('amb-offset-input').value) || 0;
+            try {
+                const response = await fetch(`/api/params?objective_temp_offset=${objOffset}&ambient_temp_offset=${ambOffset}`, { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'Failed to apply offsets');
+                alert(`Temperature offsets applied:\nObjective: ${objOffset.toFixed(3)}°C\nAmbient: ${ambOffset.toFixed(3)}°C`);
+            } catch (error) {
+                console.error('Error applying offsets:', error);
+                alert('Failed to apply temperature offsets');
+            }
+        }
+
+        async function updateParams() {
+            const fields = {
+                kp: parseFloat(document.getElementById('kp-input').value),
+                ki: parseFloat(document.getElementById('ki-input').value),
+                control_interval: parseFloat(document.getElementById('interval-input').value),
+                deadband: parseFloat(document.getElementById('deadband-input').value),
+                mode_switch_delay: parseFloat(document.getElementById('mode-delay-input').value),
+                ma_window: parseInt(document.getElementById('ma-window-input').value, 10),
+                heating_pwm_cap: parseFloat(document.getElementById('heating-cap-input').value),
+                cooling_pwm_cap: parseFloat(document.getElementById('cooling-cap-input').value),
+                kp_heating: parseFloat(document.getElementById('kp-heating-input').value),
+                kp_cooling: parseFloat(document.getElementById('kp-cooling-input').value),
+                ki_heating: parseFloat(document.getElementById('ki-heating-input').value),
+                ki_cooling: parseFloat(document.getElementById('ki-cooling-input').value),
+                near_setpoint_threshold: parseFloat(document.getElementById('near-threshold-input').value),
+                overshoot_guard: parseFloat(document.getElementById('overshoot-guard-input').value),
+                pwm_near_cap: parseFloat(document.getElementById('pwm-near-cap-input').value),
+                predictive_brake_band: parseFloat(document.getElementById('pred-brake-band-input').value),
+                trend_brake_threshold: parseFloat(document.getElementById('trend-threshold-input').value),
+                integral_bleed_rate: parseFloat(document.getElementById('integral-bleed-input').value),
+                trend_damping_gain: parseFloat(document.getElementById('trend-damping-input').value),
+            };
+            const invertDir = document.getElementById('invert-dir-input').checked;
+            const queryParts = [];
+            Object.entries(fields).forEach(([key, value]) => {
+                if (!Number.isNaN(value) && value !== null && value !== undefined) {
+                    queryParts.push(`${key}=${value}`);
+                }
+            });
+            queryParts.push(`invert_direction=${invertDir}`);
+            try {
+                const response = await fetch(`/api/params?${queryParts.join('&')}`, { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'Failed to update parameters');
+                alert(data.message || 'Parameters updated');
+                await loadParameters();
+            } catch (error) {
+                console.error('Error updating parameters:', error);
+                alert('Failed to update parameters');
+            }
+        }
+
+        async function loadParameters() {
+            try {
+                const response = await fetch('/api/params', { cache: 'no-store' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                document.getElementById('setpoint-input').value = data.setpoint.toFixed(2);
+                document.getElementById('kp-input').value = String(data.kp);
+                document.getElementById('ki-input').value = String(data.ki);
+                document.getElementById('interval-input').value = data.control_interval.toFixed(2);
+                document.getElementById('deadband-input').value = data.deadband.toFixed(2);
+                document.getElementById('mode-delay-input').value = data.mode_switch_delay.toFixed(0);
+                document.getElementById('ma-window-input').value = data.ma_window;
+                document.getElementById('heating-cap-input').value = data.heating_pwm_cap.toFixed(3);
+                document.getElementById('cooling-cap-input').value = data.cooling_pwm_cap.toFixed(3);
+                document.getElementById('kp-heating-input').value = String(data.kp_heating);
+                document.getElementById('kp-cooling-input').value = String(data.kp_cooling);
+                document.getElementById('ki-heating-input').value = String(data.ki_heating);
+                document.getElementById('ki-cooling-input').value = String(data.ki_cooling);
+                document.getElementById('near-threshold-input').value = data.near_setpoint_threshold.toFixed(2);
+                document.getElementById('overshoot-guard-input').value = data.overshoot_guard.toFixed(2);
+                document.getElementById('pwm-near-cap-input').value = data.pwm_near_cap.toFixed(3);
+                document.getElementById('pred-brake-band-input').value = data.predictive_brake_band.toFixed(3);
+                document.getElementById('trend-threshold-input').value = data.trend_brake_threshold.toFixed(4);
+                document.getElementById('integral-bleed-input').value = data.integral_bleed_rate.toFixed(3);
+                document.getElementById('trend-damping-input').value = data.trend_damping_gain.toFixed(3);
+                document.getElementById('obj-offset-input').value = data.objective_temp_offset.toFixed(3);
+                document.getElementById('amb-offset-input').value = data.ambient_temp_offset.toFixed(3);
+                document.getElementById('invert-dir-input').checked = Boolean(data.invert_direction);
+                manualStatus.locked = Boolean(data.manual_override_locked);
+                manualStatus.enabled = Boolean(data.manual_override_enabled);
+                manualStatus.direction = data.manual_direction || manualStatus.direction;
+                manualStatus.pwm = typeof data.manual_pwm === 'number' ? data.manual_pwm : manualStatus.pwm;
+                manualStatus.requestedDirection = data.manual_requested_direction || manualStatus.requestedDirection;
+                presetCache = data.presets || presetCache;
+                renderPresetList(presetCache);
+                updateManualControls();
+            } catch (error) {
+                console.error('Error loading parameters:', error);
+            }
+        }
+
+        async function loadPIDStatus() {
+            try {
+                const response = await fetch('/api/pid/status', { cache: 'no-store' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                const button = document.getElementById('pid-toggle-btn');
+                const statusSpan = document.getElementById('pid-status');
+                if (data.pid_enabled) {
+                    button.textContent = '⏹️ Stop PID';
+                    button.style.background = 'linear-gradient(135deg, #e74c3c, #c0392b)';
+                    statusSpan.textContent = 'RUNNING';
+                    statusSpan.style.color = '#27ae60';
+                } else {
+                    button.textContent = '▶️ Run PID';
+                    button.style.background = 'linear-gradient(135deg, #27ae60, #1e8449)';
+                    statusSpan.textContent = 'STANDBY';
+                    statusSpan.style.color = '#999';
+                }
+            } catch (error) {
+                console.error('Error loading PID status:', error);
+            }
+        }
+
+        async function togglePID() {
+            try {
+                const statusResponse = await fetch('/api/pid/status', { cache: 'no-store' });
+                if (!statusResponse.ok) throw new Error(`HTTP ${statusResponse.status}`);
+                const statusData = await statusResponse.json();
+                const endpoint = statusData.pid_enabled ? '/api/pid/disable' : '/api/pid/enable';
+                const response = await fetch(endpoint, { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'Failed to toggle PID');
+                alert(data.message || 'PID toggled');
+                await loadPIDStatus();
+                await loadManualStatus();
+            } catch (error) {
+                console.error('Error toggling PID:', error);
+                alert('Failed to toggle PID control');
+            }
+        }
+
+        async function loadAdaptiveStatus() {
+            try {
+                const response = await fetch('/api/adaptive/status', { cache: 'no-store' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                const toggleBtn = document.getElementById('adaptive-toggle-btn');
+                const statusSpan = document.getElementById('adaptive-status');
+                if (data.enabled) {
+                    toggleBtn.textContent = 'Disable Learning';
+                    statusSpan.textContent = 'ENABLED';
+                    statusSpan.style.color = '#27ae60';
+                } else {
+                    toggleBtn.textContent = 'Enable Learning';
+                    statusSpan.textContent = 'DISABLED';
+                    statusSpan.style.color = '#c0392b';
+                }
+                document.getElementById('learned-heating-pwm').textContent = formatValue(data.learned_baseline_heating, 4);
+                document.getElementById('learned-heating-samples').textContent = `${data.samples_heating} samples`;
+                document.getElementById('learned-cooling-pwm').textContent = formatValue(data.learned_baseline_cooling, 4);
+                document.getElementById('learned-cooling-samples').textContent = `${data.samples_cooling} samples`;
+                document.getElementById('learning-rate-input').value = data.learning_rate;
+                document.getElementById('learning-error-thresh-input').value = data.learning_error_threshold;
+                document.getElementById('learning-rate-thresh-input').value = data.learning_rate_threshold;
+                document.getElementById('learning-min-time-input').value = data.learning_min_time;
+            } catch (error) {
+                console.error('Error loading adaptive status:', error);
+            }
+        }
+
+        async function toggleAdaptiveFF() {
+            try {
+                const statusResponse = await fetch('/api/adaptive/status', { cache: 'no-store' });
+                if (!statusResponse.ok) throw new Error(`HTTP ${statusResponse.status}`);
+                const statusData = await statusResponse.json();
+                const endpoint = statusData.enabled ? '/api/adaptive/disable' : '/api/adaptive/enable';
+                const response = await fetch(endpoint, { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'Failed to toggle adaptive feedforward');
+                alert(data.message || 'Adaptive feedforward toggled');
+                await loadAdaptiveStatus();
+            } catch (error) {
+                console.error('Error toggling adaptive feedforward:', error);
+                alert('Failed to toggle adaptive feedforward');
+            }
+        }
+
+        async function resetLearnedBaselines() {
+            if (!confirm('Reset all learned baseline values to zero?')) return;
+            try {
+                const response = await fetch('/api/adaptive/reset', { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'Failed to reset baselines');
+                alert(data.message || 'Learned baselines reset');
+                await loadAdaptiveStatus();
+            } catch (error) {
+                console.error('Error resetting baselines:', error);
+                alert('Failed to reset learned baselines');
+            }
+        }
+
+        async function updateLearningParams() {
+            const learningRate = document.getElementById('learning-rate-input').value;
+            const errorThresh = document.getElementById('learning-error-thresh-input').value;
+            const rateThresh = document.getElementById('learning-rate-thresh-input').value;
+            const minTime = document.getElementById('learning-min-time-input').value;
+            try {
+                const response = await fetch(`/api/adaptive/params?learning_rate=${learningRate}&error_threshold=${errorThresh}&rate_threshold=${rateThresh}&min_time=${minTime}`, { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'Failed to update learning params');
+                alert(data.message || 'Learning parameters updated');
+                await loadAdaptiveStatus();
+            } catch (error) {
+                console.error('Error updating learning params:', error);
+                alert('Failed to update learning parameters');
+            }
+        }
+
+        function renderPresetList(presets) {
+            const container = document.getElementById('preset-list');
+            const statusEl = document.getElementById('preset-status');
+            if (!container) return;
+            container.innerHTML = '';
+            if (!Array.isArray(presets) || presets.length === 0) {
+                container.innerHTML = '<p class="empty-state">No presets saved yet.</p>';
+                statusEl.textContent = '';
+                return;
+            }
+            presets.forEach(preset => {
+                const row = document.createElement('div');
+                row.className = 'preset-row';
+                const info = document.createElement('div');
+                info.className = 'preset-name';
+                info.textContent = preset.display_name || preset.name;
+                info.title = preset.name;
+                info.addEventListener('click', () => {
+                    document.getElementById('preset-name-input').value = preset.display_name || preset.name;
+                });
+                const meta = document.createElement('div');
+                meta.className = 'preset-meta';
+                const created = preset.created_at ? new Date(preset.created_at).toLocaleString() : 'unknown';
+                const updated = preset.updated_at ? new Date(preset.updated_at).toLocaleString() : 'unknown';
+                meta.textContent = `Created: ${created} | Updated: ${updated}`;
+                info.appendChild(document.createElement('br'));
+                info.appendChild(meta);
+
+                const loadBtn = document.createElement('button');
+                loadBtn.textContent = 'Load';
+                loadBtn.addEventListener('click', async () => {
+                    await loadPreset(preset.name);
+                });
+
+                const deleteBtn = document.createElement('button');
+                deleteBtn.textContent = 'Delete';
+                deleteBtn.className = 'button-danger';
+                deleteBtn.addEventListener('click', async () => {
+                    await deletePreset(preset.name);
+                });
+
+                row.appendChild(info);
+                row.appendChild(loadBtn);
+                row.appendChild(deleteBtn);
+                container.appendChild(row);
+            });
+        }
+
+        async function fetchPresets() {
+            try {
+                const response = await fetch('/api/presets', { cache: 'no-store' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                presetCache = data.presets || [];
+                renderPresetList(presetCache);
+            } catch (error) {
+                console.error('Error fetching presets:', error);
+            }
+        }
+
+        async function savePreset() {
+            const nameInput = document.getElementById('preset-name-input');
+            const name = nameInput.value.trim();
+            if (!name) {
+                alert('Preset name is required');
+                nameInput.focus();
+                return;
+            }
+            try {
+                const response = await fetch('/api/presets/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name }),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'Failed to save preset');
+                alert(data.message || 'Preset saved');
+                presetCache = data.presets || presetCache;
+                renderPresetList(presetCache);
+                await loadParameters();
+            } catch (error) {
+                console.error('Error saving preset:', error);
+                alert(error.message || 'Failed to save preset');
+            }
+        }
+
+        async function loadPreset(name) {
+            const apply = document.getElementById('preset-apply-checkbox').checked;
+            try {
+                const response = await fetch('/api/presets/load', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, apply }),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'Failed to load preset');
+                alert(data.message || `Preset '${data.preset?.display_name || name}' loaded`);
+                presetCache = data.presets || presetCache;
+                renderPresetList(presetCache);
+                if (apply) {
+                    await loadParameters();
+                }
+            } catch (error) {
+                console.error('Error loading preset:', error);
+                alert(error.message || 'Failed to load preset');
+            }
+        }
+
+        async function deletePreset(name) {
+            if (!confirm(`Delete preset '${name}'?`)) return;
+            try {
+                const response = await fetch('/api/presets/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name }),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'Failed to delete preset');
+                alert(data.message || 'Preset deleted');
+                presetCache = data.presets || presetCache;
+                renderPresetList(presetCache);
+            } catch (error) {
+                console.error('Error deleting preset:', error);
+                alert(error.message || 'Failed to delete preset');
+            }
+        }
+
+        window.onload = async function() {
+            initCharts();
+            await Promise.all([
+                loadParameters(),
+                loadPIDStatus(),
+                loadManualStatus(),
+                loadAdaptiveStatus(),
+                fetchPresets(),
+                loadHistoricalData(),
+                fetchCurrentData(),
+            ]);
+
+            setInterval(fetchCurrentData, UPDATE_INTERVAL);
+            setInterval(loadPIDStatus, UPDATE_INTERVAL * 2);
+            setInterval(loadManualStatus, UPDATE_INTERVAL * 3);
+            setInterval(loadAdaptiveStatus, UPDATE_INTERVAL * 5);
+            setInterval(fetchPresets, UPDATE_INTERVAL * 15);
+        };
+    </script>
+</body>
+</html>

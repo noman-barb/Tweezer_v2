@@ -9,7 +9,8 @@ This system:
 6. Provides HTTP server with GET endpoint for setpoint control (no-cache)
 7. Web GUI showing: current temps, humidity, time-series plots, setpoint control
 8. Maintains CSV log with data persistence and gap detection
-9. Provides per-mode PI gains plus predictive lead settings via HTTP API
+9. Learns asymmetric heat-loss gains for feed-forward PWM compensation
+10. Provides per-mode PI gains plus predictive lead settings via HTTP API
 
 Architecture:
 - Data fetch thread: 5 Hz (0.2s interval) with 30-sample moving average
@@ -47,33 +48,33 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# PID Controller with Trend-Aware Damping
+# PID Controller with Deadband and Mode Switching
 # ============================================================================
 
 class PIController:
-    """PI controller with trend-aware damping, ambient-aware feedforward, and heating/cooling mode switching."""
+    """PI controller with deadband, trend-aware damping, ambient-aware feedforward, and heating/cooling mode switching."""
     
     def __init__(
         self,
-    setpoint: float = 25.0,
-    kp: float = 0.05,
-    ki: float = 0.001,
+        setpoint: float = 25.0,
+        kp: float = 0.05,
+        ki: float = 0.01,
         kp_heating: Optional[float] = None,
         ki_heating: Optional[float] = None,
         kp_cooling: Optional[float] = None,
         ki_cooling: Optional[float] = None,
-    deadband: float = 0.0,  # Legacy setting (unused). Retained for backward compatibility.
-    deadband_heating: Optional[float] = None,
-    deadband_cooling: Optional[float] = None,
+        deadband: float = 0.1,
+        deadband_heating: Optional[float] = None,
+        deadband_cooling: Optional[float] = None,
         pwm_min: float = 0.0,
         pwm_max: float = 0.4,
-        mode_switch_delay: float = 2.0,
+        mode_switch_delay: float = 10.0,
         heating_pwm_cap: Optional[float] = None,
         cooling_pwm_cap: Optional[float] = None,
-        near_setpoint_threshold: float = 0.5,
-        overshoot_guard: float = 0.12,
+    near_setpoint_threshold: float = 0.4,
+    overshoot_guard: float = 0.15,
         pwm_near_cap: Optional[float] = None,
-        trend_brake_threshold: float = 0.006,
+        trend_brake_threshold: float = 0.0015,
         predictive_brake_band: Optional[float] = None,
         ambient_feedforward_gain: float = 0.015,
     ) -> None:
@@ -97,25 +98,29 @@ class PIController:
         self.ki_heating = float(ki_heating) if ki_heating is not None else float(ki)
         self.kp_cooling = float(kp_cooling) if kp_cooling is not None else float(kp)
         self.ki_cooling = float(ki_cooling) if ki_cooling is not None else float(ki)
-        # Deadband support has been removed; keep zeroed fields for backward compatibility
-        self.deadband = 0.0
-        self.deadband_heating = 0.0
-        self.deadband_cooling = 0.0
+        base_deadband = max(0.0, float(deadband))
+        self.deadband = base_deadband
+        self.deadband_heating = (
+            max(0.0, float(deadband_heating))
+            if deadband_heating is not None
+            else base_deadband
+        )
+        self.deadband_cooling = (
+            max(0.0, float(deadband_cooling))
+            if deadband_cooling is not None
+            else base_deadband
+        )
+        self.deadband = max(self.deadband_heating, self.deadband_cooling)
         self.pwm_min = pwm_min
         self.pwm_max = pwm_max
         self.mode_switch_delay = mode_switch_delay
         # Limit PWM magnitude during HEATING and COOLING for conservative control
-        if heating_pwm_cap is not None:
-            cap = max(self.pwm_min, min(float(heating_pwm_cap), self.pwm_max))
-        else:
-            cap = self.pwm_max
-        self.heating_pwm_cap = cap
-
-        if cooling_pwm_cap is not None:
-            cap = max(self.pwm_min, min(float(cooling_pwm_cap), self.pwm_max))
-        else:
-            cap = self.pwm_max
-        self.cooling_pwm_cap = cap
+        self.heating_pwm_cap = (
+            float(heating_pwm_cap) if heating_pwm_cap is not None else pwm_max * 0.5
+        )
+        self.cooling_pwm_cap = (
+            float(cooling_pwm_cap) if cooling_pwm_cap is not None else pwm_max
+        )
 
         # Overshoot and near-setpoint shaping
         self.overshoot_guard = max(0.05, float(overshoot_guard))
@@ -129,18 +134,14 @@ class PIController:
         self.pwm_near_cap = min(self.pwm_near_cap, self.heating_pwm_cap, self.cooling_pwm_cap)
         self.overshoot_pwm_cap = min(self.pwm_near_cap, self.pwm_max * 0.25)
         self.trend_brake_threshold = max(0.0, float(trend_brake_threshold))
-        self.trend_rate_limit = 0.0035  # Target maximum approach rate (°C/s)
-        self.trend_settle_gate = 0.0020  # Require slow trend before near-setpoint damping activates
         self.predictive_brake_band = max(
-            0.02,
+            0.05,
             float(predictive_brake_band) if predictive_brake_band is not None else self.overshoot_guard * 0.6,
         )
         self.trend_window_seconds = 10  # Longer window for smoother trend estimation
-        self.integral_bleed_rate = 0.045  # Faster bleed keeps integral from driving oscillations without deadband
+        self.integral_bleed_rate = 0.05  # Slightly faster decay near setpoint to reduce residual overshoot
         self.min_active_output = 0.001
-        self.trend_damping_gain = min(self.pwm_max * 1.5, 0.48)
-        self.error_floor = 0.0025  # Ignore sub-millikelvin noise when computing feedback
-        self.integral_freeze_band = 0.03  # Aggressively bleed integral once we are inside ±0.03°C
+        self.trend_damping_gain = self.pwm_max * 1.2  # Reduced from 1.8 - less aggressive trend damping
 
         self.integral = 0.0
         self.last_error = 0.0
@@ -159,9 +160,25 @@ class PIController:
         self.last_ambient_temp: Optional[float] = None
         self.last_objective_temp: Optional[float] = None
 
+        # Adaptive feedforward learning from steady-state PWM
+        self.adaptive_ff_enabled: bool = True  # Enable adaptive learning by default
+        self.learned_baseline_heating: float = 0.0  # Learned PWM for heating mode
+        self.learned_baseline_cooling: float = 0.0  # Learned PWM for cooling mode
+        self.learning_rate: float = 0.05  # EMA smoothing factor (0.01-0.2 typical)
+        self.learning_error_threshold: float = 0.15  # Max error (°C) for learning
+        self.learning_rate_threshold: float = 0.005  # Max temp rate (°C/s) for learning
+        self.learning_min_time: float = 30.0  # Minimum seconds at setpoint before learning
+        self.learning_pwm_min_threshold: float = 0.005  # Ignore PWM below this
+        
+        # Learning state tracking
+        self._stable_start_time: Optional[float] = None
+        self._last_learning_update: Optional[float] = None
+        self._learning_samples_heating: int = 0
+        self._learning_samples_cooling: int = 0
+
         # Calibration offsets for temperature sensors
-        self.objective_temp_offset = 0.7
-        self.ambient_temp_offset = 0.0
+        self.objective_temp_offset: float = 0.0
+        self.ambient_temp_offset: float = 0.0
 
         self._lock = threading.Lock()
     
@@ -251,10 +268,11 @@ class PIController:
     def set_deadband(self, deadband: float) -> None:
         """Update deadband."""
         with self._lock:
-            self.deadband = 0.0  # Legacy setting (unused). Retained for backward compatibility.
-            self.deadband_heating = 0.0
-            self.deadband_cooling = 0.0
-            logger.info("Deadband disabled; ignoring requested value %.2f°C", deadband)
+            value = max(0.05, min(float(deadband), 2.0))  # Bound between 0.05-2.0°C
+            self.deadband = value
+            self.deadband_heating = value
+            self.deadband_cooling = value
+            logger.info("Deadband updated to %.2f°C (symmetric)", value)
     
     def get_deadband(self) -> float:
         """Get current deadband."""
@@ -263,9 +281,13 @@ class PIController:
 
     def set_deadband_heating(self, deadband: float) -> None:
         with self._lock:
-            self.deadband_heating = 0.0  # Legacy setting (unused). Retained for backward compatibility.
+            self.deadband_heating = max(0.05, min(float(deadband), 2.0))  # Bound between 0.05-2.0°C
             self.deadband = max(self.deadband_heating, self.deadband_cooling)
-            logger.info("Heating-side deadband ignored (feature disabled)")
+            logger.info(
+                "Heating-side deadband updated to %.2f°C (cooling=%.2f°C)",
+                self.deadband_heating,
+                self.deadband_cooling,
+            )
 
     def get_deadband_heating(self) -> float:
         with self._lock:
@@ -273,9 +295,13 @@ class PIController:
 
     def set_deadband_cooling(self, deadband: float) -> None:
         with self._lock:
-            self.deadband_cooling = 0.0  # Legacy setting (unused). Retained for backward compatibility.
+            self.deadband_cooling = max(0.05, min(float(deadband), 2.0))  # Bound between 0.05-2.0°C
             self.deadband = max(self.deadband_heating, self.deadband_cooling)
-            logger.info("Cooling-side deadband ignored (feature disabled)")
+            logger.info(
+                "Cooling-side deadband updated to %.2f°C (heating=%.2f°C)",
+                self.deadband_cooling,
+                self.deadband_heating,
+            )
 
     def get_deadband_cooling(self) -> float:
         with self._lock:
@@ -284,7 +310,7 @@ class PIController:
     def set_mode_switch_delay(self, delay: float) -> None:
         """Update minimum seconds between heating/cooling mode switches."""
         with self._lock:
-            self.mode_switch_delay = max(2.0, min(float(delay), 120.0))  # Bound between 2-120 seconds
+            self.mode_switch_delay = max(5.0, min(float(delay), 120.0))  # Bound between 5-120 seconds
             logger.info("Mode switch delay updated to %.1f s", self.mode_switch_delay)
 
     def get_mode_switch_delay(self) -> float:
@@ -366,29 +392,6 @@ class PIController:
         with self._lock:
             return self.pwm_near_cap
 
-    def set_trend_rate_limit(self, limit: float) -> None:
-        """Set the maximum allowable approach rate before damping engages."""
-        with self._lock:
-            self.trend_rate_limit = max(0.0, float(limit))
-            logger.info("Trend rate limit set to %.4f°C/s", self.trend_rate_limit)
-
-    def get_trend_rate_limit(self) -> float:
-        with self._lock:
-            return self.trend_rate_limit
-
-    def set_trend_settle_gate(self, gate: float) -> None:
-        """Set the trend threshold below which near-setpoint damping is allowed."""
-        with self._lock:
-            candidate = max(0.0, float(gate))
-            if self.trend_rate_limit > 0.0:
-                candidate = min(candidate, self.trend_rate_limit)
-            self.trend_settle_gate = candidate
-            logger.info("Trend settle gate set to %.4f°C/s", self.trend_settle_gate)
-
-    def get_trend_settle_gate(self) -> float:
-        with self._lock:
-            return self.trend_settle_gate
-
     def set_ambient_feedforward_gain(self, gain: float) -> None:
         """Set the ambient feedforward gain (PWM per °C temperature difference from ambient)."""
         with self._lock:
@@ -423,7 +426,7 @@ class PIController:
             return self.trend_brake_threshold
 
     def set_integral_bleed_rate(self, rate: float) -> None:
-        """Set integral bleed rate (1/s) applied when error is minimal."""
+        """Set integral bleed rate (1/s) used inside deadband."""
         with self._lock:
             value = max(0.0, min(float(rate), 1.0))
             self.integral_bleed_rate = value
@@ -465,6 +468,87 @@ class PIController:
         """Get current ambient temperature calibration offset."""
         with self._lock:
             return self.ambient_temp_offset
+
+    def enable_adaptive_feedforward(self) -> None:
+        """Enable adaptive feedforward learning."""
+        with self._lock:
+            self.adaptive_ff_enabled = True
+            logger.info("Adaptive feedforward learning ENABLED")
+
+    def disable_adaptive_feedforward(self) -> None:
+        """Disable adaptive feedforward learning."""
+        with self._lock:
+            self.adaptive_ff_enabled = False
+            logger.info("Adaptive feedforward learning DISABLED")
+
+    def is_adaptive_feedforward_enabled(self) -> bool:
+        """Check if adaptive feedforward is enabled."""
+        with self._lock:
+            return self.adaptive_ff_enabled
+
+    def reset_learned_baselines(self) -> None:
+        """Reset learned baseline PWM values to zero."""
+        with self._lock:
+            self.learned_baseline_heating = 0.0
+            self.learned_baseline_cooling = 0.0
+            self._learning_samples_heating = 0
+            self._learning_samples_cooling = 0
+            self._stable_start_time = None
+            logger.info("Learned baseline PWM values reset to zero")
+
+    def get_learned_baselines(self) -> Dict[str, float]:
+        """Get current learned baseline PWM values."""
+        with self._lock:
+            return {
+                "heating": self.learned_baseline_heating,
+                "cooling": self.learned_baseline_cooling,
+                "samples_heating": self._learning_samples_heating,
+                "samples_cooling": self._learning_samples_cooling,
+            }
+
+    def set_learning_rate(self, rate: float) -> None:
+        """Set the learning rate for adaptive feedforward (0.01-0.2 typical)."""
+        with self._lock:
+            self.learning_rate = max(0.001, min(float(rate), 0.5))
+            logger.info("Adaptive FF learning rate set to %.4f", self.learning_rate)
+
+    def get_learning_rate(self) -> float:
+        """Get current learning rate."""
+        with self._lock:
+            return self.learning_rate
+
+    def set_learning_error_threshold(self, threshold: float) -> None:
+        """Set max error (°C) for learning to occur."""
+        with self._lock:
+            self.learning_error_threshold = max(0.05, min(float(threshold), 1.0))
+            logger.info("Learning error threshold set to %.3f°C", self.learning_error_threshold)
+
+    def get_learning_error_threshold(self) -> float:
+        """Get current learning error threshold."""
+        with self._lock:
+            return self.learning_error_threshold
+
+    def set_learning_rate_threshold(self, threshold: float) -> None:
+        """Set max temperature rate (°C/s) for learning to occur."""
+        with self._lock:
+            self.learning_rate_threshold = max(0.0001, min(float(threshold), 0.1))
+            logger.info("Learning rate threshold set to %.5f°C/s", self.learning_rate_threshold)
+
+    def get_learning_rate_threshold(self) -> float:
+        """Get current learning rate threshold."""
+        with self._lock:
+            return self.learning_rate_threshold
+
+    def set_learning_min_time(self, time_sec: float) -> None:
+        """Set minimum seconds at setpoint before learning begins."""
+        with self._lock:
+            self.learning_min_time = max(5.0, min(float(time_sec), 300.0))
+            logger.info("Learning minimum time set to %.1f seconds", self.learning_min_time)
+
+    def get_learning_min_time(self) -> float:
+        """Get current learning minimum time."""
+        with self._lock:
+            return self.learning_min_time
 
     def compute_ambient_baseline(
         self, 
@@ -553,6 +637,111 @@ class PIController:
             return self.cooling_pwm_cap
         return self.pwm_max
 
+    def _update_adaptive_learning(
+        self, 
+        current_time: float,
+        error: float,
+        temp_trend: Optional[float],
+        pwm_value: float,
+        mode: str
+    ) -> None:
+        """Update adaptive feedforward learning based on steady-state observations.
+        
+        When the system is stable near setpoint (small error, low temp rate), the current
+        PWM represents the steady-state output needed to compensate for all thermal loads.
+        We learn this value and use it as feedforward.
+        
+        Args:
+            current_time: Current timestamp
+            error: Temperature error (setpoint - current)
+            temp_trend: Temperature rate of change (°C/s)
+            pwm_value: Current PWM output
+            mode: Current operating mode ("HEATING" or "COOLING")
+        """
+        if not self.adaptive_ff_enabled:
+            return
+        
+        if mode not in ("HEATING", "COOLING"):
+            self._stable_start_time = None
+            return
+        
+        # Check if conditions are suitable for learning
+        abs_error = abs(error)
+        abs_trend = abs(temp_trend) if temp_trend is not None else float('inf')
+        
+        is_stable = (
+            abs_error <= self.learning_error_threshold and
+            abs_trend <= self.learning_rate_threshold and
+            pwm_value >= self.learning_pwm_min_threshold
+        )
+        
+        if not is_stable:
+            # Not stable - reset timer
+            self._stable_start_time = None
+            return
+        
+        # Start or continue stability timer
+        if self._stable_start_time is None:
+            self._stable_start_time = current_time
+            return
+        
+        # Check if we've been stable long enough
+        stable_duration = current_time - self._stable_start_time
+        if stable_duration < self.learning_min_time:
+            return
+        
+        # Conditions met - update learned baseline using exponential moving average
+        if mode == "HEATING":
+            old_value = self.learned_baseline_heating
+            self.learned_baseline_heating = (
+                (1.0 - self.learning_rate) * self.learned_baseline_heating +
+                self.learning_rate * pwm_value
+            )
+            self._learning_samples_heating += 1
+            logger.info(
+                "Adaptive FF learning [HEATING]: PWM %.4f → baseline %.4f→%.4f (n=%d, stable=%.1fs)",
+                pwm_value,
+                old_value,
+                self.learned_baseline_heating,
+                self._learning_samples_heating,
+                stable_duration
+            )
+        else:  # COOLING
+            old_value = self.learned_baseline_cooling
+            self.learned_baseline_cooling = (
+                (1.0 - self.learning_rate) * self.learned_baseline_cooling +
+                self.learning_rate * pwm_value
+            )
+            self._learning_samples_cooling += 1
+            logger.info(
+                "Adaptive FF learning [COOLING]: PWM %.4f → baseline %.4f→%.4f (n=%d, stable=%.1fs)",
+                pwm_value,
+                old_value,
+                self.learned_baseline_cooling,
+                self._learning_samples_cooling,
+                stable_duration
+            )
+        
+        self._last_learning_update = current_time
+
+    def _get_adaptive_baseline(self, mode: str) -> float:
+        """Get learned baseline PWM for the given mode.
+        
+        Args:
+            mode: Operating mode ("HEATING" or "COOLING")
+            
+        Returns:
+            Learned baseline PWM value
+        """
+        if not self.adaptive_ff_enabled:
+            return 0.0
+        
+        if mode == "HEATING":
+            return self.learned_baseline_heating
+        elif mode == "COOLING":
+            return self.learned_baseline_cooling
+        return 0.0
+
     def _calculate_temp_trend(self) -> Optional[float]:
         """Calculate temperature trend (°C/s) from recent history.
         
@@ -620,8 +809,16 @@ class PIController:
             # Error metrics
             error = self.setpoint - current_temp
             abs_error = abs(error)
+            active_deadband = self.deadband_heating if error >= 0 else self.deadband_cooling
+            within_deadband = abs_error <= active_deadband
 
-            combined_baseline_pwm = ambient_baseline_pwm
+            # Adaptive baseline preference
+            preferred_mode_for_adaptive = "HEATING" if error > 0 else "COOLING"
+            adaptive_baseline_pwm = self._get_adaptive_baseline(preferred_mode_for_adaptive)
+
+            combined_baseline_pwm = max(ambient_baseline_pwm, adaptive_baseline_pwm)
+            if adaptive_baseline_pwm > ambient_baseline_pwm:
+                baseline_mode = preferred_mode_for_adaptive if adaptive_baseline_pwm > 0 else None
 
             # Reject feed-forward opposing desired direction
             if baseline_mode == "HEATING" and error < -self.deadband_cooling:
@@ -641,9 +838,10 @@ class PIController:
                 "timestamp": current_time,
                 "error": error,
                 "abs_error": abs_error,
-                "deadband": 0.0,
-                "within_deadband": False,
+                "deadband": active_deadband,
+                "within_deadband": within_deadband,
                 "ambient_ff_pwm": ambient_baseline_pwm,
+                "adaptive_ff_pwm": adaptive_baseline_pwm,
                 "combined_baseline_pwm": combined_baseline_pwm,
                 "baseline_mode": baseline_mode,
                 "preferred_mode": preferred_mode,
@@ -657,8 +855,6 @@ class PIController:
                 "trend_effective": None,
                 "approaching": False,
                 "moving_away": False,
-                "trend_limit": self.trend_rate_limit,
-                "trend_limit_exceeded": False,
                 "kp_effective": 0.0,
                 "ki_effective": 0.0,
                 "kp_scale": 1.0,
@@ -667,23 +863,83 @@ class PIController:
                 "notes": "",
             }
 
-            def add_note(note: str) -> None:
-                if details["notes"]:
-                    details["notes"] += " | " + note
-                else:
-                    details["notes"] = note
+            # ------------------------------------------------------------------
+            # Deadband handling
+            # ------------------------------------------------------------------
+            if within_deadband:
+                decay_dt = 0.0 if self.last_time is None else max(0.0, current_time - self.last_time)
+                if decay_dt > 0.0 and self.integral > 0.0:
+                    bleed = self.integral_bleed_rate * decay_dt
+                    self.integral = max(0.0, self.integral - bleed)
+
+                self.last_time = current_time
+                self.last_error = error
+                details["integral_state"] = self.integral
+
+                if combined_baseline_pwm > 0.0 and baseline_mode in ("HEATING", "COOLING"):
+                    target_mode = baseline_mode
+                    if self.current_mode is not None and target_mode != self.current_mode:
+                        if self.last_mode_switch_time is not None:
+                            elapsed = current_time - self.last_mode_switch_time
+                            if elapsed < self.mode_switch_delay:
+                                logger.debug(
+                                    "Mode switch delayed by %.1fs (limit %.1fs)", elapsed, self.mode_switch_delay
+                                )
+                                held_mode = (
+                                    self.current_mode
+                                    if self.current_mode in ("HEATING", "COOLING")
+                                    else "OFF"
+                                )
+                                details.update(
+                                    {
+                                        "mode": held_mode,
+                                        "pwm_output": 0.0,
+                                        "pwm_limit": self._pwm_limit_for_mode(held_mode)
+                                        if held_mode != "OFF"
+                                        else self.pwm_max,
+                                        "notes": "Mode switch delayed by safety timer",
+                                    }
+                                )
+                                self._last_details = details
+                                return 0.0, held_mode, details
+
+                    if target_mode != self.current_mode:
+                        logger.info("Mode switching: %s → %s", self.current_mode, target_mode)
+                        self.current_mode = target_mode
+                        self.last_mode_switch_time = current_time
+                        self.integral = 0.0
+
+                    if self.current_mode not in ("HEATING", "COOLING"):
+                        self.current_mode = "OFF"
+                        details.update({"mode": "OFF", "pwm_output": 0.0, "notes": "Invalid mode in deadband"})
+                        self._last_details = details
+                        return 0.0, "OFF", details
+
+                    pwm_limit = self._pwm_limit_for_mode(self.current_mode)
+                    pwm_value = min(combined_baseline_pwm, pwm_limit)
+                    details.update(
+                        {
+                            "mode": self.current_mode,
+                            "pwm_limit": pwm_limit,
+                            "pwm_output": pwm_value,
+                            "feedback_pwm": 0.0,
+                            "integral_state": self.integral,
+                            "notes": "Holding feed-forward within deadband",
+                        }
+                    )
+                    self._last_details = details
+                    return pwm_value, self.current_mode, details
+
+                self.current_mode = "OFF"
+                details.update({"mode": "OFF", "pwm_output": 0.0, "notes": "Within deadband"})
+                self._last_details = details
+                return 0.0, "OFF", details
 
             # ------------------------------------------------------------------
-            # Determine mode and timing
+            # Determine mode and timing outside deadband
             # ------------------------------------------------------------------
             dt = 0.0 if self.last_time is None else max(0.0, current_time - self.last_time)
             self.last_time = current_time
-
-            if dt > 0.0 and abs_error <= self.integral_freeze_band and self.integral > 0.0:
-                bleed_scale = 1.6 if abs_error <= self.error_floor else 1.0
-                bleed = self.integral_bleed_rate * bleed_scale * dt
-                self.integral = max(0.0, self.integral - bleed)
-                details["integral_state"] = self.integral
 
             desired_mode = preferred_mode
             if self.current_mode is not None and desired_mode != self.current_mode:
@@ -736,23 +992,18 @@ class PIController:
             effective_trend: Optional[float] = None
             approaching = False
             moving_away = False
-            trend_limit_exceeded = False
             if trend is not None:
                 direction = 1.0 if self.current_mode == "HEATING" else -1.0
                 effective_trend = trend * direction
                 approaching = effective_trend > self.trend_brake_threshold
                 moving_away = effective_trend < -self.trend_brake_threshold
-                trend_limit_exceeded = effective_trend > self.trend_rate_limit
-                details["trend_limit_exceeded"] = trend_limit_exceeded
 
-            effective_error = abs_error
-            if effective_error < self.error_floor:
-                effective_error = 0.0
+            effective_error = max(0.0, abs_error - active_deadband)
             if effective_error <= 0.0 and dt > 0.0 and self.integral > 0.0:
                 if not moving_away:
                     bleed = self.integral_bleed_rate * dt
                     self.integral = max(0.0, self.integral - bleed)
-                details["integral_state"] = self.integral
+                effective_error = 0.0
 
             kp_scale = 1.0
             ki_scale = 1.0
@@ -761,25 +1012,8 @@ class PIController:
                 trend_boost = min(3.0, 1.5 + abs(effective_trend or 0.0) / 0.005)
                 kp_scale *= trend_boost
                 ki_scale *= trend_boost
-                add_note("Boosting gains to counter adverse trend")
-            elif trend_limit_exceeded and effective_trend is not None:
-                excess_ratio = min(1.0, max(0.0, effective_trend - self.trend_rate_limit) / max(1e-6, self.trend_rate_limit))
-                slow_scale = max(0.15, 1.0 - 0.85 * excess_ratio)
-                kp_scale *= slow_scale
-                ki_scale *= slow_scale
-                pwm_limit = min(
-                    pwm_limit,
-                    max(
-                        self.pwm_min,
-                        combined_baseline_pwm + (pwm_limit - combined_baseline_pwm) * slow_scale,
-                    ),
-                )
-                add_note("Trend limit braking")
-            elif (
-                abs_error <= self.overshoot_guard
-                and approaching
-                and (effective_trend is None or effective_trend <= self.trend_settle_gate)
-            ):
+                details["notes"] = "Boosting gains to counter adverse trend"
+            elif abs_error <= self.overshoot_guard and approaching:
                 guard_fraction = max(0.0, abs_error / self.overshoot_guard)
                 guard_scale = max(0.3, guard_fraction)
                 kp_scale *= guard_scale
@@ -791,24 +1025,20 @@ class PIController:
                         self.overshoot_pwm_cap * max(0.4, guard_scale),
                     ),
                 )
-                add_note("Overshoot guard active")
+                details["notes"] = "Overshoot guard active"
 
                 if abs_error <= self.predictive_brake_band and (effective_trend or 0.0) > 0.008:
                     kp_scale *= 0.15
                     ki_scale *= 0.15
                     pwm_limit = self.min_active_output * 5
-                    add_note("Predictive brake engaged")
-            elif (
-                self.near_setpoint_threshold > self.error_floor
-                and approaching
-                and (effective_trend or 0.0) <= self.trend_settle_gate
-            ):
-                slow_span = max(1e-6, self.near_setpoint_threshold)
+                    details["notes"] = "Predictive brake engaged"
+            elif self.near_setpoint_threshold > active_deadband:
+                slow_span = max(1e-6, self.near_setpoint_threshold - active_deadband)
                 zone_fraction = min(1.0, effective_error / slow_span)
                 if zone_fraction < 1.0:
-                    zone_scale = max(0.35, zone_fraction ** 1.5)
+                    zone_scale = max(0.20, zone_fraction ** 1.5)
                     kp_scale *= zone_scale
-                    ki_scale *= max(0.5, zone_scale)  # Preserve integral authority so steady-state error collapses
+                    ki_scale *= zone_scale
                     pwm_floor = max(self.pwm_near_cap, combined_baseline_pwm)
                     pwm_limit = min(
                         pwm_limit,
@@ -819,9 +1049,7 @@ class PIController:
                     )
                     if approaching:
                         self.integral *= max(0.6, zone_fraction)
-                    add_note("Near-setpoint damping")
-            elif abs_error <= self.near_setpoint_threshold and effective_trend is not None and effective_trend > self.trend_settle_gate:
-                add_note("Bypassing damping due to high approach rate")
+                    details["notes"] = "Near-setpoint damping"
 
             current_kp *= kp_scale
             current_ki *= ki_scale
@@ -859,7 +1087,7 @@ class PIController:
                         self.integral = allowed_i / current_ki
                     else:
                         self.integral = 0.0
-                    add_note("Trend brake reducing output")
+                    details["notes"] = "Trend brake reducing output"
 
             pwm_output = combined_baseline_pwm + feedback
             pwm_value = max(self.pwm_min, min(pwm_output, pwm_limit))
@@ -867,13 +1095,22 @@ class PIController:
             if pwm_value <= self.min_active_output:
                 if moving_away:
                     pwm_value = max(self.min_active_output * 2, pwm_value)
-                    add_note("Holding minimal PWM to oppose drift")
+                    details["notes"] = "Holding minimal PWM to oppose drift"
                 else:
                     pwm_value = 0.0
                     self.integral = 0.0
-                    add_note("Output zeroed - stable")
+                    details["notes"] = "Output zeroed - stable"
 
             self.last_error = error
+
+            # Update adaptive learning
+            self._update_adaptive_learning(
+                current_time=current_time,
+                error=error,
+                temp_trend=trend,
+                pwm_value=pwm_value,
+                mode=self.current_mode,
+            )
 
             p_output = p_term
             i_output = current_ki * self.integral if current_ki > 0.0 else 0.0
@@ -899,13 +1136,14 @@ class PIController:
             )
 
             logger.debug(
-                "PI+: err=%.3f°C, trend=%.4f°C/s (limit %.4f°C/s), P=%.4f, I=%.4f, FF_amb=%.4f, pwm=%.4f, mode=%s",
+                "PI+: err=%.3f°C (deadband %.3f°C), trend=%.4f°C/s, P=%.4f, I=%.4f, FF_amb=%.4f, FF_adapt=%.4f, pwm=%.4f, mode=%s",
                 error,
+                active_deadband,
                 trend if trend is not None else 0.0,
-                self.trend_rate_limit,
                 p_output,
                 i_output,
                 ambient_baseline_pwm,
+                adaptive_baseline_pwm,
                 pwm_value,
                 self.current_mode,
             )
@@ -1294,6 +1532,7 @@ class DataLogger:
             "manual_pwm",
             "manual_requested_direction",
             "ambient_ff_pwm",
+            "adaptive_ff_pwm",
             "combined_baseline_pwm",
             "p_term",
             "i_term",
@@ -1364,6 +1603,7 @@ class DataLogger:
                 "manual_pwm": f"{manual_pwm:.4f}" if manual_pwm is not None else "",
                 "manual_requested_direction": manual_requested_direction or "",
                 "ambient_ff_pwm": "",
+                "adaptive_ff_pwm": "",
                 "combined_baseline_pwm": "",
                 "p_term": "",
                 "i_term": "",
@@ -1381,6 +1621,7 @@ class DataLogger:
 
             if controller_details:
                 row["ambient_ff_pwm"] = f"{controller_details.get('ambient_ff_pwm', 0.0):.4f}"
+                row["adaptive_ff_pwm"] = f"{controller_details.get('adaptive_ff_pwm', 0.0):.4f}"
                 row["combined_baseline_pwm"] = f"{controller_details.get('combined_baseline_pwm', 0.0):.4f}"
                 row["p_term"] = f"{controller_details.get('p_term', 0.0):.5f}"
                 row["i_term"] = f"{controller_details.get('i_term', 0.0):.5f}"
@@ -1431,6 +1672,9 @@ class TemperatureController:
         "kp_cooling",
         "ki_heating",
         "ki_cooling",
+        "deadband",
+        "deadband_heating",
+        "deadband_cooling",
         "mode_switch_delay",
         "heating_pwm_cap",
         "cooling_pwm_cap",
@@ -1439,8 +1683,6 @@ class TemperatureController:
         "pwm_near_cap",
         "predictive_brake_band",
         "trend_brake_threshold",
-        "trend_rate_limit",
-        "trend_settle_gate",
         "integral_bleed_rate",
         "trend_damping_gain",
         "ambient_feedforward_gain",
@@ -1456,19 +1698,19 @@ class TemperatureController:
         self,
         arduino_port: str,
         telemetry_url: str,
-    log_dir: Path,
-    setpoint: float = 23.0,
-    kp: float = 0.05,
-    ki: float = 0.001,
+        log_dir: Path,
+        setpoint: float = 25.0,
+        kp: float = 0.08,
+        ki: float = 0.012,
         kp_heating: Optional[float] = None,
         ki_heating: Optional[float] = None,
         kp_cooling: Optional[float] = None,
         ki_cooling: Optional[float] = None,
-        deadband: float = 0.0,
+        deadband: float = 0.10,
         deadband_heating: Optional[float] = None,
         deadband_cooling: Optional[float] = None,
         control_interval: float = 0.2,
-        mode_switch_delay: float = 2.0,
+        mode_switch_delay: float = 15.0,
         heating_pwm_cap: Optional[float] = None,
         cooling_pwm_cap: Optional[float] = None,
         pwm_max: float = 0.4,
@@ -1484,9 +1726,9 @@ class TemperatureController:
             setpoint: Initial temperature setpoint in °C
             kp: Proportional gain
             ki: Integral gain
-            deadband: Legacy parameter (ignored, retained for backward compatibility)
-            deadband_heating: Legacy parameter (ignored)
-            deadband_cooling: Legacy parameter (ignored)
+            deadband: Temperature tolerance ±°C
+            deadband_heating: Override for HEATING-side deadband (temperature below setpoint)
+            deadband_cooling: Override for COOLING-side deadband (temperature above setpoint)
             control_interval: Control loop interval in seconds
             heating_pwm_cap: Optional cap on PWM during HEATING mode
             cooling_pwm_cap: Optional cap on PWM during COOLING mode
@@ -1496,21 +1738,21 @@ class TemperatureController:
         self.log_dir = log_dir
         self.control_interval = control_interval
         
-        # Deadband inputs are retained for compatibility but ignored by the controller
+        # Use symmetric deadbands by default for more predictable control
         if deadband_heating is None:
-            deadband_heating = 0.0
+            deadband_heating = deadband
         if deadband_cooling is None:
-            deadband_cooling = 0.0
+            deadband_cooling = deadband
         
         # Use base gains for mode-specific gains if not specified
         if kp_heating is None:
-            kp_heating = 0.05
+            kp_heating = kp
         if ki_heating is None:
-            ki_heating = 0.001
+            ki_heating = ki
         if kp_cooling is None:
-            kp_cooling = 0.05
+            kp_cooling = kp
         if ki_cooling is None:
-            ki_cooling = 0.001
+            ki_cooling = ki
         
         # Set default PWM caps if not specified
         if heating_pwm_cap is None:
@@ -1535,17 +1777,13 @@ class TemperatureController:
             mode_switch_delay=mode_switch_delay,
             heating_pwm_cap=heating_pwm_cap,
             cooling_pwm_cap=cooling_pwm_cap,
-            near_setpoint_threshold=0.35,  # Keep shaping tighter to stay within ±0.2°C
-            overshoot_guard=0.10,  # Guard window tuned for lower oscillation amplitude
-            pwm_near_cap=0.15,  # Reduce near-setpoint authority to prevent run-away overshoot
-            trend_brake_threshold=0.0025,  # React sooner to unintended drift
-            predictive_brake_band=0.030,  # Trigger predictive brake slightly sooner
+            near_setpoint_threshold=max(0.8, deadband * 5.0),  # Start gentle damping earlier for smoother approach
+            overshoot_guard=0.15,  # Reduced to allow closer approach before aggressive damping
+            pwm_near_cap=0.15,  # Moderate cap (15%) - enough to reach setpoint but gentle to minimize overshoot
+            trend_brake_threshold=0.004,  # Only brake on fast approaches (>0.004°C/s) to allow slow steady convergence
+            predictive_brake_band=0.05,  # Very tight band (0.05°C) - only emergency brake if overshooting close to setpoint
             ambient_feedforward_gain=ambient_feedforward_gain,
         )
-
-        # Tighten trend-based damping to cap oscillation amplitude
-        self.pi_controller.set_trend_rate_limit(0.0030)
-        self.pi_controller.set_trend_settle_gate(0.0015)
         
         self.arduino = ArduinoController(port=arduino_port)
         self.telemetry = TelemetryClient(base_url=telemetry_url)
@@ -1814,12 +2052,6 @@ class TemperatureController:
                 elif key == "trend_brake_threshold":
                     self.pi_controller.set_trend_brake_threshold(float(value))
                     applied[key] = self.pi_controller.get_trend_brake_threshold()
-                elif key == "trend_rate_limit":
-                    self.pi_controller.set_trend_rate_limit(float(value))
-                    applied[key] = self.pi_controller.get_trend_rate_limit()
-                elif key == "trend_settle_gate":
-                    self.pi_controller.set_trend_settle_gate(float(value))
-                    applied[key] = self.pi_controller.get_trend_settle_gate()
                 elif key == "integral_bleed_rate":
                     self.pi_controller.set_integral_bleed_rate(float(value))
                     applied[key] = self.pi_controller.get_integral_bleed_rate()
@@ -2320,8 +2552,6 @@ class TemperatureController:
             "pwm_near_cap": self.pi_controller.get_pwm_near_cap(),
             "predictive_brake_band": self.pi_controller.get_predictive_brake_band(),
             "trend_brake_threshold": self.pi_controller.get_trend_brake_threshold(),
-            "trend_rate_limit": self.pi_controller.get_trend_rate_limit(),
-            "trend_settle_gate": self.pi_controller.get_trend_settle_gate(),
             "integral_bleed_rate": self.pi_controller.get_integral_bleed_rate(),
             "trend_damping_gain": self.pi_controller.get_trend_damping_gain(),
             "ambient_feedforward_gain": self.pi_controller.get_ambient_feedforward_gain(),
@@ -2416,6 +2646,7 @@ class TemperatureController:
                                 "manual_pwm": float(row["manual_pwm"]) if row.get("manual_pwm") else None,
                                 "manual_requested_direction": row.get("manual_requested_direction") or None,
                                 "ambient_ff_pwm": float(row["ambient_ff_pwm"]) if row.get("ambient_ff_pwm") else None,
+                                "adaptive_ff_pwm": float(row["adaptive_ff_pwm"]) if row.get("adaptive_ff_pwm") else None,
                                 "combined_baseline_pwm": float(row["combined_baseline_pwm"]) if row.get("combined_baseline_pwm") else None,
                                 "p_term": float(row["p_term"]) if row.get("p_term") else None,
                                 "i_term": float(row["i_term"]) if row.get("i_term") else None,
@@ -2430,19 +2661,10 @@ class TemperatureController:
                                 "integral_state": float(row["integral_state"]) if row.get("integral_state") else None,
                                 "controller_notes": row.get("controller_notes") or None,
                             }
-                            if any(
-                                value is not None
-                                for value in (
-                                    data_point["ambient_ff_pwm"],
-                                    data_point["combined_baseline_pwm"],
-                                    data_point["feedback_component_pwm"],
-                                    data_point["p_term"],
-                                    data_point["i_term"],
-                                    data_point["pwm_limit"],
-                                )
-                            ):
+                            if data_point["ambient_ff_pwm"] is not None or data_point["adaptive_ff_pwm"] is not None:
                                 data_point["pi_details"] = {
                                     "ambient_ff_pwm": data_point["ambient_ff_pwm"],
+                                    "adaptive_ff_pwm": data_point["adaptive_ff_pwm"],
                                     "combined_baseline_pwm": data_point["combined_baseline_pwm"],
                                     "p_term": data_point["p_term"],
                                     "i_term": data_point["i_term"],
@@ -2521,6 +2743,16 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
             self._serve_manual_disable()
         elif path == "/api/manual/set":
             self._serve_manual_set(parsed.query)
+        elif path == "/api/adaptive/status":
+            self._serve_adaptive_status()
+        elif path == "/api/adaptive/enable":
+            self._serve_adaptive_enable()
+        elif path == "/api/adaptive/disable":
+            self._serve_adaptive_disable()
+        elif path == "/api/adaptive/reset":
+            self._serve_adaptive_reset()
+        elif path == "/api/adaptive/params":
+            self._serve_adaptive_params(parsed.query)
         elif path == "/api/presets":
             self._serve_presets()
         else:
@@ -2896,22 +3128,19 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 updated["ki_cooling"] = new_kic
             
             if "deadband" in params:
-                requested_deadband = float(params["deadband"][0])
-                self.controller.pi_controller.set_deadband(requested_deadband)
-                updated["deadband"] = self.controller.pi_controller.get_deadband()
-                updated["deadband_note"] = "Deadband disabled"
+                new_deadband = float(params["deadband"][0])
+                self.controller.pi_controller.set_deadband(new_deadband)
+                updated["deadband"] = new_deadband
 
             if "deadband_heating" in params:
                 new_db_heat = float(params["deadband_heating"][0])
                 self.controller.pi_controller.set_deadband_heating(new_db_heat)
-                updated["deadband_heating"] = self.controller.pi_controller.get_deadband_heating()
-                updated["deadband_heating_note"] = "Deadband disabled"
+                updated["deadband_heating"] = new_db_heat
 
             if "deadband_cooling" in params:
                 new_db_cool = float(params["deadband_cooling"][0])
                 self.controller.pi_controller.set_deadband_cooling(new_db_cool)
-                updated["deadband_cooling"] = self.controller.pi_controller.get_deadband_cooling()
-                updated["deadband_cooling_note"] = "Deadband disabled"
+                updated["deadband_cooling"] = new_db_cool
             
             if "mode_switch_delay" in params:
                 new_delay = float(params["mode_switch_delay"][0])
@@ -2952,16 +3181,6 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
                 new_trend = float(params["trend_brake_threshold"][0])
                 self.controller.pi_controller.set_trend_brake_threshold(new_trend)
                 updated["trend_brake_threshold"] = new_trend
-
-            if "trend_rate_limit" in params:
-                new_limit = float(params["trend_rate_limit"][0])
-                self.controller.pi_controller.set_trend_rate_limit(new_limit)
-                updated["trend_rate_limit"] = self.controller.pi_controller.get_trend_rate_limit()
-
-            if "trend_settle_gate" in params:
-                new_gate = float(params["trend_settle_gate"][0])
-                self.controller.pi_controller.set_trend_settle_gate(new_gate)
-                updated["trend_settle_gate"] = self.controller.pi_controller.get_trend_settle_gate()
 
             if "integral_bleed_rate" in params:
                 new_bleed = float(params["integral_bleed_rate"][0])
@@ -3141,6 +3360,88 @@ class ControllerHTTPHandler(BaseHTTPRequestHandler):
         status["message"] = "Manual command updated"
         self._send_json(status)
     
+    def _serve_adaptive_status(self) -> None:
+        """Get adaptive feedforward status and learned baselines."""
+        if not self.controller:
+            self.send_error(500, "Controller not initialized")
+            return
+        
+        enabled = self.controller.pi_controller.is_adaptive_feedforward_enabled()
+        baselines = self.controller.pi_controller.get_learned_baselines()
+        
+        self._send_json({
+            "enabled": enabled,
+            "learned_baseline_heating": baselines["heating"],
+            "learned_baseline_cooling": baselines["cooling"],
+            "samples_heating": baselines["samples_heating"],
+            "samples_cooling": baselines["samples_cooling"],
+            "learning_rate": self.controller.pi_controller.get_learning_rate(),
+            "learning_error_threshold": self.controller.pi_controller.get_learning_error_threshold(),
+            "learning_rate_threshold": self.controller.pi_controller.get_learning_rate_threshold(),
+            "learning_min_time": self.controller.pi_controller.get_learning_min_time(),
+        })
+    
+    def _serve_adaptive_enable(self) -> None:
+        """Enable adaptive feedforward learning."""
+        if not self.controller:
+            self.send_error(500, "Controller not initialized")
+            return
+        
+        self.controller.pi_controller.enable_adaptive_feedforward()
+        self._send_json({"message": "Adaptive feedforward enabled", "enabled": True})
+    
+    def _serve_adaptive_disable(self) -> None:
+        """Disable adaptive feedforward learning."""
+        if not self.controller:
+            self.send_error(500, "Controller not initialized")
+            return
+        
+        self.controller.pi_controller.disable_adaptive_feedforward()
+        self._send_json({"message": "Adaptive feedforward disabled", "enabled": False})
+    
+    def _serve_adaptive_reset(self) -> None:
+        """Reset learned baseline values."""
+        if not self.controller:
+            self.send_error(500, "Controller not initialized")
+            return
+        
+        self.controller.pi_controller.reset_learned_baselines()
+        self._send_json({"message": "Learned baselines reset to zero"})
+    
+    def _serve_adaptive_params(self, query: str) -> None:
+        """Set adaptive feedforward learning parameters."""
+        if not self.controller:
+            self.send_error(500, "Controller not initialized")
+            return
+        
+        params = parse_qs(query)
+        updated = {}
+        
+        try:
+            if "learning_rate" in params:
+                value = float(params["learning_rate"][0])
+                self.controller.pi_controller.set_learning_rate(value)
+                updated["learning_rate"] = value
+            
+            if "error_threshold" in params:
+                value = float(params["error_threshold"][0])
+                self.controller.pi_controller.set_learning_error_threshold(value)
+                updated["error_threshold"] = value
+            
+            if "rate_threshold" in params:
+                value = float(params["rate_threshold"][0])
+                self.controller.pi_controller.set_learning_rate_threshold(value)
+                updated["rate_threshold"] = value
+            
+            if "min_time" in params:
+                value = float(params["min_time"][0])
+                self.controller.pi_controller.set_learning_min_time(value)
+                updated["min_time"] = value
+            
+            self._send_json({"message": "Learning parameters updated", "updated": updated})
+        except (ValueError, IndexError) as exc:
+            self.send_error(400, f"Invalid parameter: {exc}")
+
     def _serve_gui(self) -> None:
         """Serve web GUI."""
         if not self.INDEX_FILE.exists():
@@ -3209,26 +3510,26 @@ def main() -> None:
     parser.add_argument(
         "--setpoint",
         type=float,
-        default=0.0,
-        help="Legacy option retained for compatibility. Deadband control is disabled.",
+        default=25.0,
+        help="Initial temperature setpoint in °C (default: 25.0)",
     )
     parser.add_argument(
         "--kp",
         type=float,
-        default=0.08,
-        help="Legacy option retained for compatibility. Deadband control is disabled.",
+        default=0.015,
+        help="Base proportional gain before per-mode tuning (default: 0.015, conservative for two-stage heating)",
     )
     parser.add_argument(
         "--ki",
         type=float,
-        default=0.012,
-        help="Legacy option retained for compatibility. Deadband control is disabled.",
+        default=0.0030,
+        help="Base integral gain before per-mode tuning (default: 0.0030, conservative for two-stage heating)",
     )
     parser.add_argument(
         "--deadband",
         type=float,
-        default=0.05,
-        help="Temperature deadband ±°C (default: 0.05 for tighter steady-state control)",
+        default=0.2,
+        help="Temperature deadband ±°C (default: 0.2, allows small steady-state error to minimize oscillation)",
     )
     parser.add_argument(
         "--deadband-heating",
@@ -3245,20 +3546,20 @@ def main() -> None:
     parser.add_argument(
         "--mode-switch-delay",
         type=float,
-        default=2.0,
-        help="Minimum seconds between heating/cooling mode switches (default: 2.0, keeps heating responsive)",
+        default=30.0,
+        help="Minimum seconds between heating/cooling mode switches (default: 30.0, prevents rapid reversals)",
     )
     parser.add_argument(
         "--heating-pwm-cap",
         type=float,
-        default=0.28,
-        help="Cap on PWM during HEATING (<= pwm_max, default: 0.28 for faster recovery)",
+        default=0.15,
+        help="Cap on PWM during HEATING (<= pwm_max, default: 0.15, conservative to prevent overshoot)",
     )
     parser.add_argument(
         "--cooling-pwm-cap",
         type=float,
-        default=0.2,
-        help="Cap on PWM during COOLING (<= pwm_max, default: 0.20, conservative to prevent overshoot)",
+        default=0.15,
+        help="Cap on PWM during COOLING (<= pwm_max, default: 0.15, conservative to prevent overshoot)",
     )
     parser.add_argument(
         "--ma-window",

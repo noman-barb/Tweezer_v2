@@ -1,0 +1,74 @@
+{
+  "name": "finetuning_20251105_175452",
+  "timestamp": "2025-11-05T17:54:52.869549+00:00",
+  "base_config_name": "tweezer_area",
+  "sample_count": 6,
+  "margin_pixels": 50.0,
+  "sample_area_min_x": 50.0,
+  "sample_area_min_y": 50.0,
+  "sample_area_max_x": 1074.0,
+  "sample_area_max_y": 1102.0,
+  "samples": [
+    {
+      "slm_x": 703.8869878002839,
+      "slm_y": 253.87045967748543,
+      "particle_x": 700.5880104257168,
+      "particle_y": 260.1774109470026,
+      "error": 7.117646102045976
+    },
+    {
+      "slm_x": 737.9108775003268,
+      "slm_y": 203.76017042390833,
+      "particle_x": 733.2255003450656,
+      "particle_y": 210.83367839889578,
+      "error": 8.484531463743581
+    },
+    {
+      "slm_x": 435.2463960906308,
+      "slm_y": 768.164373638454,
+      "particle_x": 430.06065318818037,
+      "particle_y": 774.9293490335481,
+      "error": 8.52389708681092
+    },
+    {
+      "slm_x": 577.8781998533775,
+      "slm_y": 392.297705520335,
+      "particle_x": 574.5837330135892,
+      "particle_y": 398.59992006394884,
+      "error": 7.111358513828629
+    },
+    {
+      "slm_x": 779.3123716913343,
+      "slm_y": 519.0941838624733,
+      "particle_x": 775.488138256088,
+      "particle_y": 525.2347211311862,
+      "error": 7.234014052772404
+    },
+    {
+      "slm_x": 653.9196505590597,
+      "slm_y": 423.7505376078085,
+      "particle_x": 649.0933238887906,
+      "particle_y": 428.2619089782185,
+      "error": 6.606504428962917
+    }
+  ],
+  "rms_error_before": 7.548214598362393,
+  "rms_error_after": 0.0075808038459555535,
+  "max_error_before": 8.52389708681092,
+  "max_error_after": 0.015065454915477729,
+  "mean_error_before": 7.512991941360737,
+  "mean_error_after": 0.006109094454035069,
+  "refined_cam_x0": 214.0,
+  "refined_cam_y0": 158.0,
+  "refined_slm_x0": 423.84894805707006,
+  "refined_slm_y0": 259.0437235086037,
+  "refined_cam_x1": 270.0,
+  "refined_cam_y1": 1094.0,
+  "refined_slm_x1": 456.63408738165595,
+  "refined_slm_y1": 515.1768729447488,
+  "refined_cam_x2": 1070.0,
+  "refined_cam_y2": 572.0,
+  "refined_slm_x2": 813.6565312242026,
+  "refined_slm_y2": 371.42936827912274,
+  "description": "Auto-generated fine-tuning based on tweezer_area"
+}
