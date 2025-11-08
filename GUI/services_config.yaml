@@ -4,6 +4,8 @@ global:
   repo_root: ../
   log_base_dir: ../logs/service_logs
   stop_services_on_exit: true
+  slm_config_dir: ../SLM/slm_config
+  slm_feature_config_dir: ../SLM/slm_config
 services:
   arduino_grpc:
     enabled: true
@@ -63,8 +65,8 @@ services:
     restart_delay: 5
     log_subdir: imaging/save_compressed
     args:
-      input: /mnt/ramdisk/exp01a/images
-      output: /data2_noraid/data/Noman/exp01a
+      input: /mnt/ramdisk/data/
+      output: /data2_noraid/data/Noman/glass_experiments/random_kicks/exp_01_a/
       processes: 16
       max_images: '999999999'
       stability_seconds: 1.0

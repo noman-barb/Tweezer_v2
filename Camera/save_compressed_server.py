@@ -354,6 +354,18 @@ def compress_task(
         decoding_speed=decoding_speed,
     )
 
+    # Preserve original file timestamps
+    try:
+        os.utime(output_path, (src_stat.st_atime, src_stat.st_mtime))
+        logging.debug(
+            "Preserved timestamps from %s to %s (mtime: %s)",
+            src_path,
+            output_path,
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(src_stat.st_mtime)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Failed to preserve timestamps for %s: %s", output_path, exc)
+
     logging.debug(
         "Encoded %s via jxlpy (colorspace=%s, bit_depth=%d, quality=%d, effort=%d, decoding_speed=%d)",
         src_path,
