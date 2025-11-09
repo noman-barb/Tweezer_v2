@@ -1,0 +1,83 @@
+# Live g(r) Visualizer Configuration
+# Edit these values to customize the visualization
+
+# Server Configuration
+server:
+  host: "localhost"
+  port: 50052
+
+# Display Configuration
+display:
+  # Number of frames to average for g(r) calculation
+  history_length: 20
+  
+  # Update interval in milliseconds (lower = faster updates, higher CPU usage)
+  update_interval_ms: 100
+  
+  # Matplotlib style: dark_background, seaborn, ggplot, bmh
+  style: "dark_background"
+
+# g(r) Calculation Parameters
+gr_calculation:
+  # Maximum distance for g(r) calculation (in pixels)
+  cutoff: 200.0
+  
+  # Bin width for g(r) histogram (in pixels)
+  dr: 1.0
+  
+  # Fraction of points to use (1.0 = all points, lower for speed)
+  fraction: 1.0
+  
+  # Conversion factor: pixels to particle diameter (sigma)
+  # Measure your particle diameter in pixels and set this value
+  pixel_to_sigma: 32.0
+  
+  # Number of short-range bins to skip (noisy data)
+  skip_first: 5
+
+# Image Dimensions
+image:
+  width: 1456
+  height: 1090
+
+# Visualization Style
+style_options:
+  particle_scatter:
+    size: 100
+    color: "cyan"
+    alpha: 0.7
+    edge_color: "yellow"
+    edge_width: 1.5
+    # Enable density-based coloring (True/False)
+    use_density_color: true
+    density_colormap: "viridis"
+  
+  gr_line:
+    color: "cyan"
+    linewidth: 3
+    alpha: 1.0
+    show_error_band: true
+    error_band_alpha: 0.2
+  
+  reference_line:
+    color: "white"
+    style: "--"
+    linewidth: 2
+    alpha: 0.5
+
+# Performance Options
+performance:
+  # Maximum number of particles to display (0 = unlimited)
+  max_particles_display: 0
+  
+  # Enable/disable certain features for performance
+  calculate_density: true
+  show_error_bands: true
+  
+# Logging
+logging:
+  # Print debug information to console
+  verbose: false
+  
+  # Log connection events
+  log_connections: true

@@ -1,0 +1,37 @@
+# Gentle redistribution - slow, careful movements for delicate particles
+
+# Density Analysis Parameters
+grid_size: 10  # Fine-grained analysis
+density_smoothing_sigma: 2.0  # More smoothing for stable regions
+high_density_threshold: 80.0  # Only target very high density
+low_density_threshold: 20.0  # Only use very low density
+analysis_interval: 10  # Less frequent re-analysis
+
+# Movement Parameters
+movement_duration_min: 2.0  # Slow, gentle movements
+movement_duration_max: 8.0  # Very slow maximum
+max_movement_distance: 250.0  # Moderate distances
+max_movement_speed: 50.0  # Low speed limit for gentle movements
+delay_between_moves: 5.0  # Long delays for settling
+
+# Spatial Constraints
+min_particle_separation: 60.0  # More space between particles
+edge_margin: 80.0  # Larger safety margin
+target_zone_radius: 120.0  # Larger target zone
+
+# SLM Parameters
+slm_max_refresh_rate: 20.0  # Lower refresh rate
+trap_intensity: 0.95  # Higher intensity for stable trapping
+trap_z_offset: 0.0
+
+# Performance Parameters
+assumed_fps: 30.0
+target_reached_threshold: 3.0  # Precise positioning
+step_close_enough_threshold: 0.3  # High precision
+
+# Logging Parameters
+log_progress_interval: 15
+log_status_interval: 45
+
+# Experiment Control
+max_cycles: 50  # Moderate number of cycles

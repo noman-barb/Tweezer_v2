@@ -65,8 +65,8 @@ services:
     restart_delay: 5
     log_subdir: imaging/save_compressed
     args:
-      input: /mnt/ramdisk/data/
-      output: /data2_noraid/data/Noman/glass_experiments/random_kicks/exp_01_a/
+      input: /mnt/ramdisk/data/images/
+      output: /data2_noraid/data/Noman/glass_experiments/random_kicks/exp_01_a/images/
       processes: 16
       max_images: '999999999'
       stability_seconds: 1.0

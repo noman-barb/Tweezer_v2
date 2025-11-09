@@ -1,0 +1,37 @@
+# Default parameters for Particle Density Redistribution Experiment
+
+# Density Analysis Parameters
+grid_size: 8  # Number of grid cells per dimension for density mapping
+density_smoothing_sigma: 1.5  # Gaussian smoothing for density map
+high_density_threshold: 75.0  # Percentile threshold for high-density regions (%)
+low_density_threshold: 25.0  # Percentile threshold for low-density regions (%)
+analysis_interval: 5  # Re-analyze density every N cycles
+
+# Movement Parameters
+movement_duration_min: 0.5  # Minimum time to complete a movement (s)
+movement_duration_max: 4.0  # Maximum time to complete a movement (s)
+max_movement_distance: 300.0  # Maximum distance to move a particle (px)
+max_movement_speed: 100.0  # Maximum particle movement speed (px/s)
+delay_between_moves: 2.0  # Wait time between consecutive movements (s)
+
+# Spatial Constraints
+min_particle_separation: 40.0  # Minimum distance between particles at target (px)
+edge_margin: 64.0  # Minimum distance from image edges (px)
+target_zone_radius: 100.0  # Radius around low-density center to place particles (px)
+
+# SLM Parameters
+slm_max_refresh_rate: 30.0  # Maximum SLM refresh rate (Hz)
+trap_intensity: 0.9  # Trap intensity (0-1)
+trap_z_offset: 0.0  # Z-axis offset for traps
+
+# Performance Parameters
+assumed_fps: 30.0  # Assumed frame rate for speed calculations (Hz)
+target_reached_threshold: 5.0  # Distance to consider target reached (px)
+step_close_enough_threshold: 0.5  # Threshold for multi-step movement precision (px)
+
+# Logging Parameters
+log_progress_interval: 10  # How often to log movement progress (frames)
+log_status_interval: 30  # How often to log status messages (frames)
+
+# Experiment Control
+max_cycles: 100  # Maximum redistribution cycles (0 = infinite)

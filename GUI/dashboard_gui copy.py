@@ -4205,25 +4205,6 @@ class AggregateControllerStreaming:
             self.script_manager.stop_script(ctx)
         
         self.stop_monitoring()
-        
-        # Safety: Set objective heater and laser power to zero before shutdown
-        if self.due_manager.connected:
-            try:
-                # Set laser power to zero (DAC0)
-                laser_spec = self._get_dac_spec("LASER_POWER_CONTROL_DAC_PIN")
-                self.due_manager.write_dac(laser_spec, 0.0)
-                logging.info("Set laser power to 0 before shutdown")
-            except Exception as e:
-                logging.error(f"Failed to set laser power to zero on shutdown: {e}")
-            
-            try:
-                # Set objective heater to zero (DAC1)
-                heater_spec = self._get_dac_spec("OBJECTIVE_HEATER_CONTROL_DAC_PIN")
-                self.due_manager.write_dac(heater_spec, 0.0)
-                logging.info("Set objective heater to 0 before shutdown")
-            except Exception as e:
-                logging.error(f"Failed to set objective heater to zero on shutdown: {e}")
-        
         self.due_manager.shutdown()
         self.slm_client.shutdown()
         self.image_client.disconnect()

@@ -1,0 +1,37 @@
+# Aggressive redistribution - fast movements for robust particles
+
+# Density Analysis Parameters
+grid_size: 8
+density_smoothing_sigma: 1.0  # Less smoothing
+high_density_threshold: 65.0  # Lower threshold - more aggressive
+low_density_threshold: 35.0  # Higher threshold - more targets
+analysis_interval: 3  # Frequent re-analysis
+
+# Movement Parameters
+movement_duration_min: 0.3  # Fast movements
+movement_duration_max: 2.0  # Still reasonably fast
+max_movement_distance: 400.0  # Longer distances allowed
+max_movement_speed: 200.0  # High speed limit for aggressive movements
+delay_between_moves: 1.5  # Short delays
+
+# Spatial Constraints
+min_particle_separation: 35.0  # Allow closer packing
+edge_margin: 60.0
+target_zone_radius: 100.0
+
+# SLM Parameters
+slm_max_refresh_rate: 60.0  # High refresh rate
+trap_intensity: 0.9
+trap_z_offset: 0.0
+
+# Performance Parameters
+assumed_fps: 30.0
+target_reached_threshold: 6.0  # Less precise
+step_close_enough_threshold: 0.8
+
+# Logging Parameters
+log_progress_interval: 8
+log_status_interval: 20
+
+# Experiment Control
+max_cycles: 150  # Many cycles for thorough redistribution

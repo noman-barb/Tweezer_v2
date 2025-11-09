@@ -1,0 +1,37 @@
+# Quick test parameters - faster movements and shorter cycles
+
+# Density Analysis Parameters
+grid_size: 6  # Coarser grid for faster analysis
+density_smoothing_sigma: 1.0  # Less smoothing
+high_density_threshold: 70.0  # Slightly lower threshold
+low_density_threshold: 30.0  # Slightly higher threshold
+analysis_interval: 3  # More frequent re-analysis
+
+# Movement Parameters
+movement_duration_min: 0.3  # Faster movements
+movement_duration_max: 1.5  # Faster movements
+max_movement_distance: 200.0  # Shorter distances
+max_movement_speed: 150.0  # Higher speed limit for quick testing
+delay_between_moves: 1.0  # Shorter delays
+
+# Spatial Constraints
+min_particle_separation: 30.0  # Allow closer particles
+edge_margin: 50.0  # Smaller margin
+target_zone_radius: 80.0  # Smaller target zone
+
+# SLM Parameters
+slm_max_refresh_rate: 60.0  # Higher refresh rate
+trap_intensity: 0.85  # Slightly lower intensity
+trap_z_offset: 0.0
+
+# Performance Parameters
+assumed_fps: 30.0
+target_reached_threshold: 8.0  # More lenient threshold
+step_close_enough_threshold: 1.0
+
+# Logging Parameters
+log_progress_interval: 5  # More frequent logging
+log_status_interval: 15
+
+# Experiment Control
+max_cycles: 20  # Fewer cycles for quick test

@@ -1,53 +1,9 @@
-"""gRPC image server that stores TIFF images and runs trackpy-based detection.
-
-Performance Optimizations for High Feature Count (Python 3.11+):
-- @dataclass(slots=True) on all dataclasses: 5x less memory, 1.4x faster object creation
-- Uses structured numpy arrays throughout processing pipeline (avoids object overhead)
-- Batch-converts to TrackDetection objects only at final stage using optimized .tolist() + zip
-- Ultra-fast integer-based deduplication with numba (10-50x faster than float operations)
-  * Rounds coordinates to integers (perfect for 3px tolerance)
-  * Uses fast integer comparisons instead of float sqrt/multiply
-  * Early termination with bounding box checks
-- cKDTree-based deduplication O(N log N) fallback for >50 features
-- Numba-accelerated fallback deduplication when scipy unavailable
-- Pre-allocated numpy arrays instead of lists
-- characterize=False in trackpy.locate to skip expensive eccentricity calculations
-- Detailed timing logs to identify bottlenecks per processing stage
-- Controlled garbage collection for predictable latency (eliminates random GC spikes)
-  * Disables automatic GC during processing (TWEEZER_GC_DISABLE=1, default: enabled)
-  * Manually triggers GC every N frames at safe times (TWEEZER_GC_INTERVAL=10)
-  * Trades slightly higher average latency for consistent, spike-free performance
-
-Deduplication Speed Hierarchy (fastest to slowest):
-1. Integer numba method: ~0.1ms for 1000 detections (RECOMMENDED)
-2. cKDTree method: ~2-5ms for 1000 detections
-3. Float numba method: ~10-20ms for 1000 detections
-
-Conversion Speed (with slots=True):
-- Optimized bulk conversion: ~0.002ms per detection (1.5x faster than without slots)
-- 1000 detections: ~2ms (10x faster than naive approach)
-
-Memory Improvement (with slots=True):
-- TrackDetection: 56 bytes vs 280 bytes (5x improvement)
-- 1000 detections: ~100 KB vs ~330 KB (3.3x less memory)
-
-Latency Predictability (with GC control):
-- Without GC control: 5-10ms baseline, random 20-50ms spikes every 10-100 frames
-- With GC control (interval=10): 6-11ms consistent, 12-20ms GC pause every 10 frames
-- With GC control (interval=1): 7-10ms every frame (gen-0 only, 0.5-2ms overhead)
-- Result: Eliminates unpredictable spikes, predictable worst-case latency
-
-GC Strategy Selection:
-- interval=1: Ultra-low jitter (~1ms variation), best for real-time control, +2ms overhead
-- interval=5-10: Balanced (default=1), good jitter control, lower average overhead
-- interval=20+: Minimize GC overhead, accept periodic longer pauses
-"""
+"""gRPC image server that stores TIFF images and runs trackpy-based detection."""
 
 from __future__ import annotations
 
 import argparse
 import atexit
-import gc
 import io
 import logging
 import multiprocessing as mp
@@ -218,20 +174,10 @@ try:
 except ImportError:  # pragma: no cover - hdf5plugin optional
     hdf5plugin = None  # type: ignore[assignment]
 
-try:
-    from scipy.spatial import cKDTree
-except ImportError:  # pragma: no cover - scipy optional
-    cKDTree = None  # type: ignore[assignment]
-
 
 LOGGER = logging.getLogger("image_server")
 TRACK_LOGGER = logging.getLogger("image_server.tracking")
 
-# Garbage collection control for predictable latency
-# Set TWEEZER_GC_DISABLE=1 to disable automatic GC during processing (recommended for low-jitter)
-_GC_DISABLE_DURING_PROCESSING = bool(int(os.environ.get("TWEEZER_GC_DISABLE", "1")))
-# Manually trigger GC every N frames when disabled
-_GC_COLLECT_INTERVAL = max(1, int(os.environ.get("TWEEZER_GC_INTERVAL", "1")))
 
 _HDF5_ENHANCED_FLUSH_INTERVAL_DEFAULT = 8
 _HDF5_LEGACY_FLUSH_INTERVAL_DEFAULT = 1
@@ -262,8 +208,6 @@ print(f"HDF5_BITSHUFFLE_CLEVEL: {_HDF5_BITSHUFFLE_CLEVEL}")
 print(f"BITSHUFFLE_CODECS: {_BITSHUFFLE_CODECS}")
 print(f"STORAGE_QUEUE_LIMIT: {_STORAGE_QUEUE_LIMIT}")
 print(f"ENABLE_HDF5_STORAGE_IMPROVEMENTS: {ENABLE_HDF5_STORAGE_IMPROVEMENTS}")
-print(f"GC_DISABLE_DURING_PROCESSING: {_GC_DISABLE_DURING_PROCESSING}")
-print(f"GC_COLLECT_INTERVAL: {_GC_COLLECT_INTERVAL} frames")
 
 
 
@@ -477,7 +421,7 @@ def add_ImageExchangeServicer_to_server(servicer: Any, server: grpc.Server) -> N
     server.add_generic_rpc_handlers((generic_handler,))
 
 
-@dataclass(slots=True)
+@dataclass
 class CachedImage:
     filename: str
     timestamp_ms: int
@@ -487,7 +431,7 @@ class CachedImage:
     sequence: int
 
 
-@dataclass(slots=True)
+@dataclass
 class DetectionConfig:
     diameter: int = 21
     separation: int = 18
@@ -530,7 +474,7 @@ class DetectionConfig:
         return DetectionConfig(**values)
 
 
-@dataclass(slots=True)
+@dataclass
 class TrackDetection:
     x: float
     y: float
@@ -540,7 +484,7 @@ class TrackDetection:
     signal: float
 
 
-@dataclass(slots=True)
+@dataclass
 class TrackResult:
     sequence: int
     filename: str
@@ -554,7 +498,7 @@ class TrackResult:
     image: Optional[np.ndarray] = None
 
 
-@dataclass(slots=True)
+@dataclass
 class StorageMetrics:
     sequence: int
     duration_ms: float
@@ -576,13 +520,13 @@ class _SubscriptionMode(str, Enum):
     TRACKS_ONLY = "tracks"
 
 
-@dataclass(slots=True)
+@dataclass
 class _Subscriber:
     queue: "queue.Queue[bytes]"
     mode: _SubscriptionMode
 
 
-@dataclass(slots=True)
+@dataclass
 class StorageState:
     enabled: bool = False
     target_fps: float = 0.0
@@ -875,7 +819,7 @@ class _Hdf5Writer:
 
 
 
-@dataclass(slots=True)
+@dataclass
 class TileTask:
     buffer: Optional[bytes]
     array: Optional[np.ndarray]
@@ -1016,13 +960,7 @@ def _apply_filters(df: Any, tile_image: np.ndarray, config: DetectionConfig) -> 
     return df
 
 
-def _process_tile(task: TileTask) -> np.ndarray:
-    """Process a tile and return structured numpy array of detections.
-    
-    Returns:
-        Structured array with dtype [('x', 'f4'), ('y', 'f4'), ('mass', 'f4'), 
-                                      ('ecc', 'f4'), ('size', 'f4'), ('signal', 'f4')]
-    """
+def _process_tile(task: TileTask) -> List[TrackDetection]:
     if task.array is not None:
         array = task.array
     else:
@@ -1042,31 +980,27 @@ def _process_tile(task: TileTask) -> np.ndarray:
         minmass=config.minmass,
         max_iterations=config.refine,
         engine="numba",
-        characterize=False,  # Skip eccentricity/size calculation for speed
     )
     df = _apply_filters(df, work_image, config)
-    
-    n_detections = len(df)
-    if n_detections == 0:
-        # Return empty structured array
-        dtype = np.dtype([('x', 'f4'), ('y', 'f4'), ('mass', 'f4'), 
-                         ('ecc', 'f4'), ('size', 'f4'), ('signal', 'f4')])
-        return np.empty(0, dtype=dtype)
-    
-    # Pre-allocate structured array
-    dtype = np.dtype([('x', 'f4'), ('y', 'f4'), ('mass', 'f4'), 
-                     ('ecc', 'f4'), ('size', 'f4'), ('signal', 'f4')])
-    result = np.empty(n_detections, dtype=dtype)
-    
-    # Fill array directly with offset coordinates
-    result['x'] = df["x"].to_numpy(dtype=np.float32) + task.offset_x
-    result['y'] = df["y"].to_numpy(dtype=np.float32) + task.offset_y
-    result['mass'] = df.get("mass", df["x"] * 0.0).to_numpy(dtype=np.float32)
-    result['ecc'] = df.get("ecc", df["x"] * 0.0).to_numpy(dtype=np.float32)
-    result['size'] = df.get("size", df["x"] * 0.0).to_numpy(dtype=np.float32)
-    result['signal'] = df.get("signal", df["x"] * 0.0).to_numpy(dtype=np.float32)
-    
-    return result
+    if df.empty:
+        return []
+    x_vals = df["x"].to_numpy(dtype=float) + task.offset_x
+    y_vals = df["y"].to_numpy(dtype=float) + task.offset_y
+    mass = df.get("mass", df["x"] * 0.0).to_numpy(dtype=float)
+    ecc = df.get("ecc", df["x"] * 0.0).to_numpy(dtype=float)
+    size = df.get("size", df["x"] * 0.0).to_numpy(dtype=float)
+    signal = df.get("signal", df["x"] * 0.0).to_numpy(dtype=float)
+    return [
+        TrackDetection(
+            x=float(x_vals[idx]),
+            y=float(y_vals[idx]),
+            mass=float(mass[idx]),
+            ecc=float(ecc[idx]),
+            size=float(size[idx]),
+            signal=float(signal[idx]),
+        )
+        for idx in range(len(df))
+    ]
 
 
 def _normalize_to_uint8(image: np.ndarray) -> np.ndarray:
@@ -1230,266 +1164,60 @@ def _ensure_unique_path(path: Path, *, sequence_hint: Optional[int] = None) -> P
         counter += 1
 
 
-if nb is not None:
-    @nb.njit(cache=True, fastmath=True)
-    def _deduplicate_indices_numba_fast(
-        x_coords: np.ndarray,
-        y_coords: np.ndarray,
-        scores: np.ndarray,
-        tolerance: int,
-    ) -> np.ndarray:
-        """Ultra-fast numba deduplication using integer coordinates and spatial grid.
-        
-        Args:
-            x_coords: Integer x coordinates (rounded)
-            y_coords: Integer y coordinates (rounded)
-            scores: Detection scores for prioritization
-            tolerance: Integer pixel tolerance (e.g., 3 for 3 pixels)
-        """
-        n = len(x_coords)
-        if n < 2:
-            return np.arange(n, dtype=np.int32)
-        
-        # Sort by score descending
-        order = np.argsort(-scores)
-        kept_mask = np.ones(n, dtype=np.bool_)
-        
-        # Process in score order
-        for i in range(n):
-            idx = order[i]
-            if not kept_mask[idx]:
-                continue
-            
-            x_i = x_coords[idx]
-            y_i = y_coords[idx]
-            
-            # Check remaining detections in tolerance box
-            for j in range(i + 1, n):
-                jdx = order[j]
-                if not kept_mask[jdx]:
-                    continue
-                
-                x_j = x_coords[jdx]
-                y_j = y_coords[jdx]
-                
-                # Fast integer distance check
-                dx = abs(x_i - x_j)
-                if dx > tolerance:
-                    continue
-                
-                dy = abs(y_i - y_j)
-                if dy > tolerance:
-                    continue
-                
-                # If within box, mark as duplicate (lower score gets removed)
-                if dx * dx + dy * dy <= tolerance * tolerance:
-                    kept_mask[jdx] = False
-        
-        # Extract kept indices
-        kept_indices = np.empty(n, dtype=np.int32)
-        count = 0
-        for i in range(n):
-            if kept_mask[i]:
-                kept_indices[count] = i
-                count += 1
-        
-        return kept_indices[:count]
-    
-    @nb.njit(cache=True, fastmath=True)
-    def _deduplicate_indices_numba(
-        coords: np.ndarray,
-        scores: np.ndarray,
-        tolerance_sq: float,
-    ) -> np.ndarray:
-        """Numba-accelerated deduplication using spatial hashing (legacy fallback)."""
-        n = len(coords)
-        if n < 2:
-            return np.arange(n, dtype=np.int32)
-        
-        # Sort by score descending
-        order = np.argsort(-scores)
-        kept = []
-        
-        for i in range(n):
-            idx = order[i]
-            x, y = coords[idx, 0], coords[idx, 1]
-            is_duplicate = False
-            
-            # Check against already kept detections
-            for kept_idx in kept:
-                kx, ky = coords[kept_idx, 0], coords[kept_idx, 1]
-                dist_sq = (x - kx) ** 2 + (y - ky) ** 2
-                if dist_sq <= tolerance_sq:
-                    is_duplicate = True
-                    break
-            
-            if not is_duplicate:
-                kept.append(idx)
-        
-        # Convert to array and sort by original order
-        result = np.array(kept, dtype=np.int32)
-        result.sort()
-        return result
-else:
-    _deduplicate_indices_numba_fast = None  # type: ignore[assignment]
-    _deduplicate_indices_numba = None  # type: ignore[assignment]
-
-
-def _deduplicate_detections_fast(
-    detections: np.ndarray,
-    tolerance: float,
-) -> np.ndarray:
-    """Ultra-fast deduplication using integer coordinates (recommended for 3px tolerance).
-    
-    This is the fastest method - converts to integer pixels and uses numba.
-    Perfect for typical use case of ~3 pixel tolerance.
-    """
-    if len(detections) < 2 or tolerance <= 0:
-        return detections
-    
-    if _deduplicate_indices_numba_fast is None:
-        # Fallback if numba not available
-        return _deduplicate_detections_kdtree(detections, tolerance)
-    
-    # Convert to integer coordinates (much faster than float operations)
-    x_int = np.rint(detections['x']).astype(np.int32)
-    y_int = np.rint(detections['y']).astype(np.int32)
-    
-    scores = np.nan_to_num(detections['mass'].astype(np.float32))
-    if not np.any(scores):
-        scores = np.nan_to_num(detections['signal'].astype(np.float32))
-    if not np.any(scores):
-        scores = np.arange(len(detections), 0, -1, dtype=np.float32)
-    
-    # Use integer tolerance (e.g., 3.0 -> 3 pixels)
-    tolerance_int = max(1, int(np.round(tolerance)))
-    
-    kept_indices = _deduplicate_indices_numba_fast(x_int, y_int, scores, tolerance_int)
-    
-    return detections[kept_indices]
-
-
-def _deduplicate_detections_kdtree(
-    detections: np.ndarray,
-    tolerance: float,
-) -> np.ndarray:
-    """Drop near-duplicate detections using cKDTree (fast for many features)."""
-    if len(detections) < 2 or tolerance <= 0 or cKDTree is None:
-        return detections
-
-    coords = np.column_stack((detections['x'], detections['y']))
-    scores = np.nan_to_num(detections['mass'].astype(np.float32))
-    
-    if not np.any(scores):
-        scores = np.nan_to_num(detections['signal'].astype(np.float32))
-    if not np.any(scores):
-        scores = np.arange(len(detections), 0, -1, dtype=np.float32)
-
-    # Build KD-tree for efficient spatial queries
-    tree = cKDTree(coords)
-    
-    # Sort by score descending
-    order = np.argsort(-scores)
-    kept_mask = np.ones(len(detections), dtype=bool)
-    
-    for idx in order:
-        if not kept_mask[idx]:
-            continue
-        
-        # Find all neighbors within tolerance (using L2 norm)
-        neighbors = tree.query_ball_point(coords[idx], tolerance, p=2)
-        
-        # Mark lower-scoring neighbors as duplicates
-        for neighbor_idx in neighbors:
-            if neighbor_idx != idx and kept_mask[neighbor_idx]:
-                if scores[neighbor_idx] < scores[idx]:
-                    kept_mask[neighbor_idx] = False
-    
-    return detections[kept_mask]
-
-
-def _deduplicate_detections_numba(
-    detections: np.ndarray,
-    tolerance: float,
-) -> np.ndarray:
-    """Drop near-duplicate detections using numba (fallback if no scipy)."""
-    if len(detections) < 2 or tolerance <= 0:
-        return detections
-    
-    if _deduplicate_indices_numba is None:
-        # No numba, return all detections
-        return detections
-    
-    coords = np.column_stack((detections['x'], detections['y'])).astype(np.float32)
-    scores = np.nan_to_num(detections['mass'].astype(np.float32))
-    
-    if not np.any(scores):
-        scores = np.nan_to_num(detections['signal'].astype(np.float32))
-    if not np.any(scores):
-        scores = np.arange(len(detections), 0, -1, dtype=np.float32)
-    
-    tolerance_sq = float(tolerance * tolerance)
-    kept_indices = _deduplicate_indices_numba(coords, scores, tolerance_sq)
-    
-    return detections[kept_indices]
-
-
 def _deduplicate_detections(
-    detections: np.ndarray,
+    detections: Sequence[TrackDetection],
     tolerance: float,
-) -> np.ndarray:
-    """Drop near-duplicate detections returned from overlapping tiles.
-    
-    Uses fast integer-based method when numba available (fastest),
-    otherwise falls back to cKDTree or numba float method.
-    """
+) -> List[TrackDetection]:
+    """Drop near-duplicate detections returned from overlapping tiles."""
     if len(detections) < 2 or tolerance <= 0:
-        return detections
-    
-    # Use ultra-fast integer method if numba available (recommended)
-    if _deduplicate_indices_numba_fast is not None:
-        return _deduplicate_detections_fast(detections, tolerance)
-    
-    # Use cKDTree for large detection counts (O(N log N))
-    if cKDTree is not None and len(detections) > 50:
-        return _deduplicate_detections_kdtree(detections, tolerance)
-    
-    # Fallback to numba float implementation
-    return _deduplicate_detections_numba(detections, tolerance)
+        return list(detections)
 
+    coords = np.array([(det.x, det.y) for det in detections], dtype=np.float32)
+    scores = np.nan_to_num(np.array([det.mass for det in detections], dtype=np.float32))
+    if not np.any(scores):
+        scores = np.nan_to_num(np.array([det.signal for det in detections], dtype=np.float32))
+    if not np.any(scores):
+        scores = np.arange(len(detections), 0, -1, dtype=np.float32)
 
-def _structured_array_to_detections(detection_array: np.ndarray) -> List[TrackDetection]:
-    """Batch-convert structured numpy array to TrackDetection objects.
-    
-    This is the final conversion step, done only once after all processing.
-    Optimized to minimize overhead when converting many detections.
-    
-    Speed optimizations:
-    - .tolist() converts numpy arrays to Python lists at C speed
-    - zip() creates tuples without indexing overhead
-    - List comprehension pre-allocates, faster than append
-    - No repeated float() calls or array indexing
-    """
-    if len(detection_array) == 0:
-        return []
-    
-    # Convert all fields to native Python types in bulk (C-speed conversion)
-    # This is much faster than converting each element individually
-    x_list = detection_array['x'].tolist()
-    y_list = detection_array['y'].tolist()
-    mass_list = detection_array['mass'].tolist()
-    ecc_list = detection_array['ecc'].tolist()
-    size_list = detection_array['size'].tolist()
-    signal_list = detection_array['signal'].tolist()
-    
-    # Use zip for parallel iteration (faster than indexing)
-    # List comprehension pre-allocates memory (faster than append loop)
-    detections = [
-        TrackDetection(x=x, y=y, mass=m, ecc=e, size=s, signal=sig)
-        for x, y, m, e, s, sig in zip(x_list, y_list, mass_list, ecc_list, size_list, signal_list)
-    ]
-    
-    return detections
+    order = np.argsort(-scores, kind="mergesort")
+    cell_size = max(tolerance, 1e-6)
+    inv_cell = 1.0 / cell_size
+    tol_sq = float(tolerance * tolerance)
+
+    buckets: Dict[Tuple[int, int], List[int]] = {}
+    kept: List[int] = []
+
+    for idx in order:
+        x = float(coords[idx, 0])
+        y = float(coords[idx, 1])
+        cell_x = int(math.floor(x * inv_cell))
+        cell_y = int(math.floor(y * inv_cell))
+        duplicate = False
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                bucket = buckets.get((cell_x + dx, cell_y + dy))
+                if not bucket:
+                    continue
+                for keep_idx in bucket:
+                    diff_x = x - float(coords[keep_idx, 0])
+                    diff_y = y - float(coords[keep_idx, 1])
+                    if diff_x * diff_x + diff_y * diff_y <= tol_sq:
+                        duplicate = True
+                        break
+                if duplicate:
+                    break
+            if duplicate:
+                break
+        if duplicate:
+            continue
+        kept.append(idx)
+        buckets.setdefault((cell_x, cell_y), []).append(idx)
+
+    if len(kept) == len(detections):
+        return list(detections)
+
+    kept.sort()
+    return [detections[idx] for idx in kept]
 
 
 class TrackingManager:
@@ -1623,31 +1351,16 @@ class TrackingManager:
             return self._restart_count, self._last_restart_ms
 
     def _loop(self) -> None:
-        frame_count = 0
-        gc_was_enabled = gc.isenabled()
-        
-        # Disable GC for predictable latency if configured
-        if _GC_DISABLE_DURING_PROCESSING and gc_was_enabled:
-            gc.disable()
-            TRACK_LOGGER.info(
-                "Disabled automatic GC for predictable latency (will manually collect every %d frames)",
-                _GC_COLLECT_INTERVAL
-            )
-        
         while True:
             with self._lock:
                 while not self._stopped and self._pending is None:
                     self._lock.wait()
                 if self._stopped:
-                    # Restore GC state on shutdown
-                    if _GC_DISABLE_DURING_PROCESSING and gc_was_enabled:
-                        gc.enable()
                     return
                 image = self._pending
                 self._pending = None
             if image is None:
                 continue
-            
             start = time.perf_counter()
             try:
                 result = self._process_image(image)
@@ -1657,27 +1370,6 @@ class TrackingManager:
             end = time.perf_counter()
             result.processed_at_ms = int(time.time() * 1000)
             result.processing_ms = int((end - start) * 1000)
-            
-            # Manually trigger GC at controlled intervals for predictable latency
-            frame_count += 1
-            if _GC_DISABLE_DURING_PROCESSING and frame_count >= _GC_COLLECT_INTERVAL:
-                gc_start = time.perf_counter()
-                
-                # Optimize for interval=1: only collect gen-0 (youngest objects, fastest)
-                # For interval>1: do full collection to prevent gen-1/gen-2 buildup
-                if _GC_COLLECT_INTERVAL == 1:
-                    collected = gc.collect(0)  # Gen-0 only: 0.5-2ms (very fast!)
-                else:
-                    collected = gc.collect()   # All generations: 5-10ms
-                
-                gc_ms = (time.perf_counter() - gc_start) * 1000.0
-                if collected > 0 or gc_ms > 1.0:
-                    TRACK_LOGGER.debug(
-                        "Manual GC collected %d objects in %.1fms (every %d frames, gen=%s)",
-                        collected, gc_ms, _GC_COLLECT_INTERVAL,
-                        "0 only" if _GC_COLLECT_INTERVAL == 1 else "all"
-                    )
-                frame_count = 0
             callback: Optional[Callable[[CachedImage, TrackResult], None]]
             with self._lock:
                 self._latest = result
@@ -1757,123 +1449,54 @@ class TrackingManager:
             TRACK_LOGGER.exception("Error while shutting down tracking pool")
         self._pool = self._create_pool()
 
-    def _run_tiles(self, tasks: List[TileTask]) -> np.ndarray:
-        """Run tile processing and return concatenated structured array."""
+    def _run_tiles(self, tasks: List[TileTask]) -> List[TrackDetection]:
         if not tasks:
-            dtype = np.dtype([('x', 'f4'), ('y', 'f4'), ('mass', 'f4'), 
-                             ('ecc', 'f4'), ('size', 'f4'), ('signal', 'f4')])
-            return np.empty(0, dtype=dtype)
-        
+            return []
         if len(tasks) == 1:
             return _process_tile(tasks[0])
-        
-        detection_arrays: List[np.ndarray] = []
+        detections: List[TrackDetection] = []
         attempts = 0
         while attempts < 2:
             attempts += 1
             try:
                 chunk = 1 if not self._use_process_pool else max(1, len(tasks) // max(1, self._worker_count * 4))
                 for tile_detections in self._pool.map(_process_tile, tasks, chunksize=chunk):
-                    if len(tile_detections) > 0:
-                        detection_arrays.append(tile_detections)
-                
-                # Concatenate all detection arrays
-                if detection_arrays:
-                    return np.concatenate(detection_arrays)
-                else:
-                    dtype = np.dtype([('x', 'f4'), ('y', 'f4'), ('mass', 'f4'), 
-                                     ('ecc', 'f4'), ('size', 'f4'), ('signal', 'f4')])
-                    return np.empty(0, dtype=dtype)
+                    if tile_detections:
+                        detections.extend(tile_detections)
+                return detections
             except BrokenProcessPool:
                 if not self._use_process_pool:
                     raise
                 TRACK_LOGGER.error("Tracking worker crashed during map; attempt %d", attempts)
                 self._restart_pool()
-                detection_arrays = []
             except Exception:
                 TRACK_LOGGER.exception("Unexpected error during tile processing; attempt %d", attempts)
                 if self._use_process_pool:
                     self._restart_pool()
-                    detection_arrays = []
                 else:
                     break
-        
-        # Fallback to inline tile processing
         TRACK_LOGGER.error("Falling back to inline tile processing after repeated failures")
-        detection_arrays = []
         for task in tasks:
-            tile_result = _process_tile(task)
-            if len(tile_result) > 0:
-                detection_arrays.append(tile_result)
-        
-        if detection_arrays:
-            return np.concatenate(detection_arrays)
-        else:
-            dtype = np.dtype([('x', 'f4'), ('y', 'f4'), ('mass', 'f4'), 
-                             ('ecc', 'f4'), ('size', 'f4'), ('signal', 'f4')])
-            return np.empty(0, dtype=dtype)
+            detections.extend(_process_tile(task))
+        return detections
 
     def _process_image(self, image: CachedImage) -> TrackResult:
         # Decode once per committed frame; downstream workers receive tiles.
-        t_start = time.perf_counter()
         decoded = _decode_image_bytes(image.data)
-        t_decode = time.perf_counter()
-        
         with self._lock:
             config = replace(self._config)
         tasks = list(_iter_tiles(decoded, config, for_process_pool=self._use_process_pool))
-        t_tile_prep = time.perf_counter()
-        
-        detection_array = self._run_tiles(tasks)
-        t_detection = time.perf_counter()
-        
-        # Deduplicate detections from overlapping tiles
-        # Note: Uses integer-based deduplication (e.g., 3.0px -> 3 integer pixels)
-        # This is 10-50x faster than float operations for typical 3px tolerance
-        if len(detection_array) > 0:
+        detections = self._run_tiles(tasks)
+        if detections:
             tolerance_px = max(0.5, min(2.0, config.diameter * 0.25))
-            deduped = _deduplicate_detections(detection_array, tolerance_px)
-            t_dedupe = time.perf_counter()
-            
-            if len(deduped) != len(detection_array):
+            deduped = _deduplicate_detections(detections, tolerance_px)
+            if len(deduped) != len(detections):
                 TRACK_LOGGER.debug(
-                    "Removed %d overlapping detections during dedupe (tolerance=%.2f px, dedupe_ms=%.1f)",
-                    len(detection_array) - len(deduped),
+                    "Removed %d overlapping detections during dedupe (tolerance=%.2f px)",
+                    len(detections) - len(deduped),
                     tolerance_px,
-                    (t_dedupe - t_detection) * 1000.0,
                 )
-            detection_array = deduped
-        else:
-            t_dedupe = time.perf_counter()
-        
-        # Batch-convert structured array to TrackDetection objects only at final stage
-        # Note: convert_ms scales linearly with detection count (~0.01ms per detection)
-        # Spikes can occur due to Python GC or memory allocation patterns
-        detections = _structured_array_to_detections(detection_array)
-        t_convert = time.perf_counter()
-        
-        # Log detailed timing breakdown for performance analysis
-        decode_ms = (t_decode - t_start) * 1000.0
-        tile_prep_ms = (t_tile_prep - t_decode) * 1000.0
-        detection_ms = (t_detection - t_tile_prep) * 1000.0
-        dedupe_ms = (t_dedupe - t_detection) * 1000.0
-        convert_ms = (t_convert - t_dedupe) * 1000.0
-        total_ms = (t_convert - t_start) * 1000.0
-        
-        if len(detections) > 100 or total_ms > 50:
-            TRACK_LOGGER.info(
-                "Frame %d: %d detections | decode=%.1fms tile_prep=%.1fms detection=%.1fms "
-                "dedupe=%.1fms convert=%.1fms total=%.1fms",
-                image.sequence,
-                len(detections),
-                decode_ms,
-                tile_prep_ms,
-                detection_ms,
-                dedupe_ms,
-                convert_ms,
-                total_ms,
-            )
-        
+            detections = deduped
         image_shape: Tuple[int, int] = (int(decoded.shape[0]), int(decoded.shape[1]))
         result = TrackResult(
             sequence=image.sequence,
