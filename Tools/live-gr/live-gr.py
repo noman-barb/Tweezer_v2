@@ -501,7 +501,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--history",
         type=int,
-        default=20,
+        default=2,
         help="Number of frames to average for g(r)",
     )
     parser.add_argument(

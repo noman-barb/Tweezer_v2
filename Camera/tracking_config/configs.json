@@ -1,9 +1,11 @@
 {
-  "current_config": "cfg2",
+  "current_config": "cfg_track_all",
   "available_configs": [
     "default",
     "cfg1",
     "cf1",
-    "cfg2"
+    "cfg2",
+    "cfg3",
+    "cfg_track_all"
   ]
 }

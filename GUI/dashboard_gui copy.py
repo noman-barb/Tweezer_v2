@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import logging
 import math
@@ -1202,6 +1203,10 @@ class AggregateControllerStreaming:
         self.finetuning_thread: Optional[threading.Thread] = None
         self.manual_calibration_samples: List[FineTuningSample] = []
         self.manual_calibration_lock = threading.Lock()
+        
+        # Frame counter for periodic GC (collect every 300 frames ~= every 5 seconds at 60fps)
+        self._frame_counter = 0
+        self._gc_interval = 300
 
     def set_ui(self, ui: AggregateUI) -> None:
         self.ui = ui
@@ -1236,6 +1241,8 @@ class AggregateControllerStreaming:
 
     def disconnect_image(self) -> None:
         self.image_client.disconnect()
+        # Collect garbage after disconnect to free network buffers
+        gc.collect(generation=0)
 
     def connect_due(self, host: Optional[str] = None, port: Optional[int] = None) -> None:
         host = host or self.due_endpoint.host
@@ -1246,6 +1253,8 @@ class AggregateControllerStreaming:
 
     def disconnect_due(self) -> None:
         self.due_manager.disconnect()
+        # Collect garbage after disconnect to free network buffers
+        gc.collect(generation=0)
 
     def connect_slm(self, host: Optional[str] = None, port: Optional[int] = None) -> None:
         host = host or self.slm_endpoint.host
@@ -1256,6 +1265,8 @@ class AggregateControllerStreaming:
 
     def disconnect_slm(self) -> None:
         self.slm_client.disconnect()
+        # Collect garbage after disconnect to free network buffers
+        gc.collect(generation=0)
 
     # DAC control
     
@@ -1312,8 +1323,12 @@ class AggregateControllerStreaming:
 
     def clear_points(self) -> None:
         """Clear all SLM points."""
+        point_count = len(self.slm_points)
         self.slm_points.clear()
         self._mark_slm_dirty()
+        # If we had many points, collect garbage to free memory
+        if point_count > 50:
+            gc.collect(generation=0)
         logging.info("Cleared all SLM points")
 
     def _mark_slm_dirty(self) -> None:
@@ -2098,6 +2113,9 @@ class AggregateControllerStreaming:
             if self.ui and self.ui.ui_config_combo and dpg.does_item_exist(self.ui.ui_config_combo):
                 dpg.set_value(self.ui.ui_config_combo, name)
             
+            # Collect garbage after loading large configuration
+            gc.collect(generation=0)
+            
             logging.info(f"Loaded UI configuration: {name}")
             return True
         except Exception as exc:
@@ -2320,6 +2338,12 @@ class AggregateControllerStreaming:
             # Update fine-tuning UI
             self._update_finetuning_display()
             
+            # Periodic garbage collection to prevent gradual memory buildup
+            self._frame_counter += 1
+            if self._frame_counter >= self._gc_interval:
+                gc.collect(generation=0)  # Quick collection of young objects only
+                self._frame_counter = 0
+            
         except Exception as exc:
             logging.exception("Error in update loop: %s", exc)
 
@@ -2383,6 +2407,9 @@ class AggregateControllerStreaming:
                 # Update our references
                 self.ui.texture_id = new_texture
                 self.ui.texture_size = (display_w, display_h)
+                
+                # Collect garbage after texture recreation to prevent memory buildup
+                gc.collect()
             else:
                 # Same size, just update the data
                 dpg.set_value(self.ui.texture_id, flat)
@@ -3062,6 +3089,9 @@ class AggregateControllerStreaming:
         if self.monitoring_thread:
             self.monitoring_thread.join(timeout=self.monitoring_interval + 2.0)
         
+        # Collect garbage after stopping monitoring thread
+        gc.collect(generation=0)
+        
         # Update button
         if self.ui and self.ui.monitoring_start_button:
             dpg.configure_item(self.ui.monitoring_start_button, label="Start Monitor",
@@ -3214,6 +3244,9 @@ class AggregateControllerStreaming:
                         writer.writerow(slm_row)
                 except Exception as exc:
                     logging.error(f"Error writing SLM metrics: {exc}")
+        
+        # Collect garbage after monitoring writes to prevent buildup from CSV operations
+        gc.collect(generation=0)
 
     # Experiment script management
     
@@ -3684,6 +3717,9 @@ class AggregateControllerStreaming:
             # Clear the trap
             self.clear_points()
             self.force_send_slm()
+            
+            # Collect garbage after fine-tuning completes (major operation with many temp objects)
+            gc.collect()
     
     def _find_nearest_particle(self, x: float, y: float, max_distance: float = 100.0) -> Optional[Tuple[float, float]]:
         """Find the nearest tracked particle to a given position.
@@ -4205,6 +4241,28 @@ class AggregateControllerStreaming:
             self.script_manager.stop_script(ctx)
         
         self.stop_monitoring()
+        
+        # Safety: Set objective heater and laser power to zero before shutdown
+        if self.due_manager.connected:
+            try:
+                # Set laser power to zero (DAC0)
+                laser_spec = self._get_dac_spec("LASER_POWER_CONTROL_DAC_PIN")
+                self.due_manager.write_dac(laser_spec, 0.0)
+                logging.info("Set laser power to 0 before shutdown")
+            except Exception as e:
+                logging.error(f"Failed to set laser power to zero on shutdown: {e}")
+            
+            try:
+                # Set objective heater to zero (DAC1)
+                heater_spec = self._get_dac_spec("OBJECTIVE_HEATER_CONTROL_DAC_PIN")
+                self.due_manager.write_dac(heater_spec, 0.0)
+                logging.info("Set objective heater to 0 before shutdown")
+            except Exception as e:
+                logging.error(f"Failed to set objective heater to zero on shutdown: {e}")
+        
+        # Perform garbage collection before shutdown for clean exit
+        gc.collect()
+        
         self.due_manager.shutdown()
         self.slm_client.shutdown()
         self.image_client.disconnect()

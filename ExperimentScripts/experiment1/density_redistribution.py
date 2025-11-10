@@ -259,6 +259,20 @@ class DensityRedistribution(ExperimentScript):
             format_str='%.1f'
         ))
         
+        self.register_param(ParamSpec(
+            name='min_particle_mass',
+            label='Min Particle Mass',
+            param_type=float,
+            default=0.0,
+            min_value=0.0,
+            max_value=100000.0,
+            step=10.0,
+            unit='',
+            category='Constraints',
+            description='Minimum particle mass to consider for tracking and manipulation',
+            format_str='%.1f'
+        ))
+        
         # === SLM Parameters ===
         self.register_param(ParamSpec(
             name='slm_max_refresh_rate',
@@ -278,7 +292,7 @@ class DensityRedistribution(ExperimentScript):
             name='trap_intensity',
             label='Trap Intensity',
             param_type=float,
-            default=0.9,
+            default=1.0,
             min_value=0.0,
             max_value=1.0,
             step=0.05,
@@ -539,11 +553,21 @@ class DensityRedistribution(ExperimentScript):
         raw_density_map = np.zeros((self.grid_size, self.grid_size), dtype=int)
         cell_particle_indices: List[List[List[int]]] = [[[] for _ in range(self.grid_size)] for _ in range(self.grid_size)]
 
-        for idx, (px, py, _) in enumerate(ctx.tracked_positions):
+        min_mass = self.get_param_value('min_particle_mass')
+        filtered_count = 0
+        for idx, (px, py, mass) in enumerate(ctx.tracked_positions):
+            # Filter by minimum mass
+            if mass < min_mass:
+                filtered_count += 1
+                continue
+                
             x_idx = min(max(int(np.searchsorted(self.grid_x_edges, px, side='right') - 1), 0), self.grid_size - 1)
             y_idx = min(max(int(np.searchsorted(self.grid_y_edges, py, side='right') - 1), 0), self.grid_size - 1)
             raw_density_map[y_idx, x_idx] += 1
             cell_particle_indices[y_idx][x_idx].append(idx)
+        
+        if filtered_count > 0:
+            ctx.log(f"Filtered out {filtered_count} particles below mass threshold {min_mass:.1f}", "DEBUG")
 
         # Smooth density for thresholding while preserving raw counts for planning
         density_map = raw_density_map.astype(float)
@@ -647,7 +671,12 @@ class DensityRedistribution(ExperimentScript):
         
         # Find particles near this region center
         candidates = []
+        min_mass = self.get_param_value('min_particle_mass')
         for idx, (px, py, mass) in enumerate(ctx.tracked_positions):
+            # Filter by minimum mass
+            if mass < min_mass:
+                continue
+                
             distance = np.sqrt((px - region_x)**2 + (py - region_y)**2)
             
             # Check edge constraints
@@ -1063,12 +1092,16 @@ class DensityRedistribution(ExperimentScript):
         if not ctx.tracked_positions:
             return None
 
+        min_mass = self.get_param_value('min_particle_mass')
         base_radius = max(self.cell_width, self.cell_height) * 0.75
         best_candidate: Optional[Tuple[float, int, float, float, float]] = None
 
         def consider(radius: float, current_best: Optional[Tuple[float, int, float, float, float]]) -> Optional[Tuple[float, int, float, float, float]]:
             best = current_best
             for idx, (px, py, mass) in enumerate(ctx.tracked_positions):
+                # Filter by minimum mass
+                if mass < min_mass:
+                    continue
                 if not self._position_within_bounds(px, py):
                     continue
                 distance = math.hypot(px - move.source_center[0], py - move.source_center[1])
@@ -1128,8 +1161,12 @@ class DensityRedistribution(ExperimentScript):
         if not self._position_within_bounds(x, y):
             return False
 
+        min_mass = self.get_param_value('min_particle_mass')
         if ctx.tracked_positions:
-            for idx, (other_x, other_y, _) in enumerate(ctx.tracked_positions):
+            for idx, (other_x, other_y, mass) in enumerate(ctx.tracked_positions):
+                # Only check separation with particles that meet mass threshold
+                if mass < min_mass:
+                    continue
                 if source_index is not None and idx == source_index:
                     continue
                 if abs(other_x - source_position[0]) < 1.0 and abs(other_y - source_position[1]) < 1.0:

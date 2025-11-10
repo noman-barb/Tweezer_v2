@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import logging
 import math
@@ -1202,6 +1203,10 @@ class AggregateControllerStreaming:
         self.finetuning_thread: Optional[threading.Thread] = None
         self.manual_calibration_samples: List[FineTuningSample] = []
         self.manual_calibration_lock = threading.Lock()
+        
+        # Frame counter for periodic GC (collect every 300 frames ~= every 5 seconds at 60fps)
+        self._frame_counter = 0
+        self._gc_interval = 300
 
     def set_ui(self, ui: AggregateUI) -> None:
         self.ui = ui
@@ -1236,6 +1241,8 @@ class AggregateControllerStreaming:
 
     def disconnect_image(self) -> None:
         self.image_client.disconnect()
+        # Collect garbage after disconnect to free network buffers
+        gc.collect(generation=0)
 
     def connect_due(self, host: Optional[str] = None, port: Optional[int] = None) -> None:
         host = host or self.due_endpoint.host
@@ -1246,6 +1253,8 @@ class AggregateControllerStreaming:
 
     def disconnect_due(self) -> None:
         self.due_manager.disconnect()
+        # Collect garbage after disconnect to free network buffers
+        gc.collect(generation=0)
 
     def connect_slm(self, host: Optional[str] = None, port: Optional[int] = None) -> None:
         host = host or self.slm_endpoint.host
@@ -1256,6 +1265,8 @@ class AggregateControllerStreaming:
 
     def disconnect_slm(self) -> None:
         self.slm_client.disconnect()
+        # Collect garbage after disconnect to free network buffers
+        gc.collect(generation=0)
 
     # DAC control
     
@@ -1312,8 +1323,12 @@ class AggregateControllerStreaming:
 
     def clear_points(self) -> None:
         """Clear all SLM points."""
+        point_count = len(self.slm_points)
         self.slm_points.clear()
         self._mark_slm_dirty()
+        # If we had many points, collect garbage to free memory
+        if point_count > 50:
+            gc.collect(generation=0)
         logging.info("Cleared all SLM points")
 
     def _mark_slm_dirty(self) -> None:
@@ -2098,6 +2113,9 @@ class AggregateControllerStreaming:
             if self.ui and self.ui.ui_config_combo and dpg.does_item_exist(self.ui.ui_config_combo):
                 dpg.set_value(self.ui.ui_config_combo, name)
             
+            # Collect garbage after loading large configuration
+            gc.collect(generation=0)
+            
             logging.info(f"Loaded UI configuration: {name}")
             return True
         except Exception as exc:
@@ -2320,6 +2338,12 @@ class AggregateControllerStreaming:
             # Update fine-tuning UI
             self._update_finetuning_display()
             
+            # Periodic garbage collection to prevent gradual memory buildup
+            self._frame_counter += 1
+            if self._frame_counter >= self._gc_interval:
+                gc.collect(generation=0)  # Quick collection of young objects only
+                self._frame_counter = 0
+            
         except Exception as exc:
             logging.exception("Error in update loop: %s", exc)
 
@@ -2358,12 +2382,22 @@ class AggregateControllerStreaming:
             # Draw circles on SLM points before converting to texture
             rgb = self._draw_slm_circles(rgb, scale)
             
-            rgba = np.concatenate([rgb, np.full((display_h, display_w, 1), 255, dtype=np.uint8)], axis=-1)
-            flat = (rgba.astype(np.float32) / 255.0).flatten()
-            
-            # Check if we need to create a new texture due to size change
+            # Pre-allocate RGBA buffer if needed or reuse existing
             current_size = self.ui.texture_size
-            if (display_w, display_h) != current_size:
+            needs_resize = (display_w, display_h) != current_size
+            
+            # Reuse or allocate RGBA buffer
+            if not hasattr(self, '_rgba_buffer') or needs_resize:
+                self._rgba_buffer = np.empty((display_h, display_w, 4), dtype=np.uint8)
+            
+            # Fill RGBA buffer efficiently
+            self._rgba_buffer[:, :, :3] = rgb
+            self._rgba_buffer[:, :, 3] = 255
+            
+            # Convert to float and flatten (vectorized operation)
+            flat = (self._rgba_buffer.astype(np.float32, copy=False) / 255.0).ravel()
+            
+            if needs_resize:
                 # Delete old texture and create new one with correct size
                 if dpg.does_item_exist(self.ui.texture_id):
                     dpg.delete_item(self.ui.texture_id)
@@ -2383,8 +2417,16 @@ class AggregateControllerStreaming:
                 # Update our references
                 self.ui.texture_id = new_texture
                 self.ui.texture_size = (display_w, display_h)
+                
+                # Defer garbage collection to avoid stalls
+                if not hasattr(self, '_gc_counter'):
+                    self._gc_counter = 0
+                self._gc_counter += 1
+                if self._gc_counter >= 30:  # GC every 30 resizes instead of every time
+                    gc.collect()
+                    self._gc_counter = 0
             else:
-                # Same size, just update the data
+                # Same size, just update the data (fast path)
                 dpg.set_value(self.ui.texture_id, flat)
                 dpg.configure_item(self.ui.image_item, width=display_w, height=display_h)
         except Exception as exc:
@@ -2402,8 +2444,13 @@ class AggregateControllerStreaming:
         """
         import cv2
         
-        # Make a copy so we don't modify the original
-        img_with_circles = image.copy()
+        # Use in-place modification with pre-allocated buffer when possible
+        if not hasattr(self, '_circle_draw_buffer') or self._circle_draw_buffer.shape != image.shape:
+            self._circle_draw_buffer = image.copy()
+        else:
+            np.copyto(self._circle_draw_buffer, image)
+        
+        img_with_circles = self._circle_draw_buffer
         
         # Draw fine-tuning visualization if active
         if (
@@ -2415,7 +2462,7 @@ class AggregateControllerStreaming:
         ):
             img_with_circles = self._draw_finetuning_overlay(img_with_circles, scale)
         
-        # Draw regular SLM circles
+        # Draw regular SLM circles - BATCH PROCESSING
         if self.slm_points and self.slm_client.connected:
             # Convert color from 0-255 to OpenCV format
             color_bgr = (self.circle_color[2], self.circle_color[1], self.circle_color[0])  # RGB to BGR
@@ -2426,21 +2473,32 @@ class AggregateControllerStreaming:
             
             logging.debug(f"Drawing {len(self.slm_points)} circles with scale={scale:.2f}, radius={scaled_radius}, thickness={scaled_thickness}")
             
-            for idx, point in enumerate(self.slm_points):
-                # Convert point coordinates (in original image space) to display coordinates
+            # Batch all circle drawing operations
+            # Pre-compute all coordinates
+            centers = []
+            for point in self.slm_points:
                 display_x = int(point.x * scale)
                 display_y = int(point.y * scale)
-                
-                logging.debug(f"  Point {idx}: orig=({point.x:.1f}, {point.y:.1f}) -> display=({display_x}, {display_y})")
-                
-                # Draw circle
-                cv2.circle(  # type: ignore
-                    img_with_circles,
-                    (display_x, display_y),
-                    scaled_radius,
-                    color_bgr,
-                    scaled_thickness
-                )
+                centers.append((display_x, display_y))
+            
+            # Draw all circles in one optimized loop (OpenCV is already optimized)
+            # Using cv2.circle in a loop is already quite fast, but we can use GPU if available
+            try:
+                # Try to use CUDA/GPU acceleration if available
+                if hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                    # GPU path (if available) - would need UMat
+                    gpu_img = cv2.UMat(img_with_circles)
+                    for center in centers:
+                        cv2.circle(gpu_img, center, scaled_radius, color_bgr, scaled_thickness)  # type: ignore
+                    img_with_circles = gpu_img.get()
+                else:
+                    # CPU path - draw all circles
+                    for center in centers:
+                        cv2.circle(img_with_circles, center, scaled_radius, color_bgr, scaled_thickness)  # type: ignore
+            except Exception:
+                # Fallback to simple loop if GPU fails
+                for center in centers:
+                    cv2.circle(img_with_circles, center, scaled_radius, color_bgr, scaled_thickness)  # type: ignore
         
         return img_with_circles
     
@@ -3062,6 +3120,9 @@ class AggregateControllerStreaming:
         if self.monitoring_thread:
             self.monitoring_thread.join(timeout=self.monitoring_interval + 2.0)
         
+        # Collect garbage after stopping monitoring thread
+        gc.collect(generation=0)
+        
         # Update button
         if self.ui and self.ui.monitoring_start_button:
             dpg.configure_item(self.ui.monitoring_start_button, label="Start Monitor",
@@ -3214,6 +3275,9 @@ class AggregateControllerStreaming:
                         writer.writerow(slm_row)
                 except Exception as exc:
                     logging.error(f"Error writing SLM metrics: {exc}")
+        
+        # Collect garbage after monitoring writes to prevent buildup from CSV operations
+        gc.collect(generation=0)
 
     # Experiment script management
     
@@ -3684,6 +3748,9 @@ class AggregateControllerStreaming:
             # Clear the trap
             self.clear_points()
             self.force_send_slm()
+            
+            # Collect garbage after fine-tuning completes (major operation with many temp objects)
+            gc.collect()
     
     def _find_nearest_particle(self, x: float, y: float, max_distance: float = 100.0) -> Optional[Tuple[float, float]]:
         """Find the nearest tracked particle to a given position.
@@ -4223,6 +4290,9 @@ class AggregateControllerStreaming:
                 logging.info("Set objective heater to 0 before shutdown")
             except Exception as e:
                 logging.error(f"Failed to set objective heater to zero on shutdown: {e}")
+        
+        # Perform garbage collection before shutdown for clean exit
+        gc.collect()
         
         self.due_manager.shutdown()
         self.slm_client.shutdown()

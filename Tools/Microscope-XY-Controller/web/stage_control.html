@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Microscope XY Stage Controller</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --primary: #667eea;
+            --primary-dark: #764ba2;
+            --success: #059669;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --surface: #ffffff;
+            --muted: #6b7280;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            min-height: 100vh;
+            padding: 24px;
+            color: #202124;
+        }
+
+        .container {
+            max-width: 1180px;
+            margin: 0 auto;
+            background: var(--surface);
+            border-radius: 18px;
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.22);
+            overflow: hidden;
+        }
+
+        header {
+            padding: 32px 40px;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            color: #fff;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2.4rem;
+            font-weight: 700;
+        }
+
+        header p {
+            margin: 8px 0 0;
+            font-size: 1rem;
+            opacity: 0.88;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            padding: 24px 32px;
+            background: #f4f5fb;
+            border-bottom: 1px solid #e4e6f1;
+        }
+
+        .status-card {
+            background: #fff;
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+        }
+
+        .status-card h3 {
+            margin: 0 0 6px;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--muted);
+        }
+
+        .status-value {
+            font-size: 1.65rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .status-value .unit {
+            font-size: 0.8rem;
+            color: var(--muted);
+            margin-left: 4px;
+        }
+
+        .status-value.status-moving {
+            color: var(--warning);
+        }
+
+        .status-value.status-locked {
+            color: var(--danger);
+        }
+
+        .main-content {
+            padding: 32px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 24px;
+        }
+
+        .panel {
+            background: #ffffff;
+            border-radius: 14px;
+            padding: 24px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .panel h2 {
+            margin: 0;
+            font-size: 1.3rem;
+            color: #2c3e50;
+        }
+
+        .control-panel {
+            grid-column: 1 / -1;
+        }
+
+        .keyboard-note {
+            margin: 0;
+            font-size: 0.95rem;
+            color: #374151;
+        }
+
+        .keyboard-list {
+            margin: 0;
+            padding-left: 20px;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        .controls-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        button.btn {
+            border: none;
+            border-radius: 10px;
+            padding: 12px 20px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            color: #fff;
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        button.btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 18px rgba(102, 126, 234, 0.28);
+        }
+
+        button.btn:disabled {
+            background: linear-gradient(135deg, #cbd5f5, #b4bce3);
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        button.btn.secondary {
+            background: linear-gradient(135deg, #6b7280, #4b5563);
+        }
+
+        button.btn.danger {
+            background: linear-gradient(135deg, #ef4444, #b91c1c);
+        }
+
+        button.btn.toggle[data-enabled="true"] {
+            background: linear-gradient(135deg, #10b981, #059669);
+        }
+
+        .message-bar {
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            background: #eef2ff;
+            color: #1e40af;
+        }
+
+        .message-bar[data-level="error"] {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+
+        .message-bar[data-level="warning"] {
+            background: #fef3c7;
+            color: #b45309;
+        }
+
+        .message-bar.hidden {
+            display: none;
+        }
+
+        input[type="text"],
+        input[type="number"] {
+            width: 100%;
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 2px solid #d1d9e6;
+            font-size: 1rem;
+            transition: border-color 0.2s ease;
+        }
+
+        input[type="text"]:focus,
+        input[type="number"]:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        select {
+            width: 100%;
+            min-height: 200px;
+            border-radius: 10px;
+            border: 2px solid #d1d9e6;
+            padding: 12px;
+            font-size: 0.95rem;
+            background: #f9fafb;
+        }
+
+        select:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .speed-summary {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+
+        .speed-summary-value {
+            display: flex;
+            align-items: baseline;
+            gap: 4px;
+        }
+
+        .speed-value {
+            font-weight: 700;
+            font-size: 1.1rem;
+            color: var(--primary);
+        }
+
+        .speed-note {
+            margin: 0;
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+
+        .history {
+            max-height: 360px;
+            overflow-y: auto;
+        }
+
+        .history-item {
+            padding: 12px;
+            background: #f9fafb;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+            border: 1px solid #e5e7eb;
+        }
+
+        .history-item.warning {
+            border-color: #fcd34d;
+        }
+
+        .history-item.error {
+            border-color: #fca5a5;
+            color: #b91c1c;
+        }
+
+        .history-item.empty {
+            text-align: center;
+            color: var(--muted);
+            font-style: italic;
+        }
+
+        .history-time {
+            color: var(--muted);
+            font-size: 0.8rem;
+        }
+
+        .history-action {
+            font-weight: 600;
+            color: #374151;
+            margin-top: 4px;
+        }
+
+        .light-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.95rem;
+            color: #374151;
+        }
+
+        .light-indicator {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 60px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            background: #e5e7eb;
+            color: #374151;
+        }
+
+        .light-indicator.on {
+            background: #d1fae5;
+            color: #047857;
+        }
+
+        .light-indicator.off {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+
+        .footer {
+            padding: 16px 32px;
+            background: #f4f5fb;
+            color: #636e72;
+            font-size: 0.85rem;
+            border-top: 1px solid #e4e6f1;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #10b981;
+        }
+
+        .status-indicator.disconnected {
+            background: #ef4444;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 12px;
+            }
+
+            header {
+                padding: 24px;
+            }
+
+            .status-grid {
+                padding: 20px;
+            }
+
+            .main-content {
+                padding: 20px;
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Microscope XY Stage Controller</h1>
+            <p>Keyboard-only navigation with continuous, speed-limited motion.</p>
+        </header>
+
+        <section class="status-grid">
+            <div class="status-card">
+                <h3>X Position</h3>
+                <div class="status-value">
+                    <span id="x-position-mm">--</span>
+                    <span class="unit">mm</span>
+                </div>
+            </div>
+            <div class="status-card">
+                <h3>Y Position</h3>
+                <div class="status-value">
+                    <span id="y-position-mm">--</span>
+                    <span class="unit">mm</span>
+                </div>
+            </div>
+            <div class="status-card">
+                <h3>X Steps</h3>
+                <div class="status-value">
+                    <span id="x-position-steps">--</span>
+                </div>
+            </div>
+            <div class="status-card">
+                <h3>Y Steps</h3>
+                <div class="status-value">
+                    <span id="y-position-steps">--</span>
+                </div>
+            </div>
+            <div class="status-card">
+                <h3>Status</h3>
+                <div class="status-value" id="movement-status">Locked</div>
+            </div>
+        </section>
+
+        <section class="main-content">
+            <div class="panel control-panel">
+                <h2>Control & Safety</h2>
+                <p class="keyboard-note">Use the keyboard arrows or WASD keys to move once movement is enabled. Mouse-based motion is disabled.</p>
+                <ul class="keyboard-list">
+                    <li>Hold a key for continuous movement within the safe speed limit.</li>
+                    <li>Release the key to stop. Emergency stop halts instantly.</li>
+                </ul>
+                <div class="controls-row">
+                    <button class="btn toggle" id="btn-enable" data-enabled="false">Enable Movement</button>
+                    <button class="btn danger" id="btn-emergency">Emergency Stop</button>
+                    <button class="btn secondary" id="btn-refresh">Refresh Position</button>
+                </div>
+                <div id="message-bar" class="message-bar hidden" data-level="info"></div>
+            </div>
+
+            <div class="panel">
+                <h2>Speed Limit</h2>
+                <div class="speed-summary">
+                    <span>Commanded speed</span>
+                    <div class="speed-summary-value">
+                        <span class="speed-value" id="speed-value">--</span>
+                        <span class="unit">mm/s</span>
+                    </div>
+                </div>
+                <div class="controls-row">
+                    <input type="number" id="speed-input" min="0.0001" max="__DEFAULT_MAX_SPEED__" step="0.0001" value="__DEFAULT_MAX_SPEED__">
+                    <button class="btn secondary" id="btn-apply-speed">Apply Speed</button>
+                </div>
+                <div class="controls-row">
+                    <input type="number" id="max-speed-input" min="0.0005" max="__ABS_MAX_SPEED__" step="0.0001" value="__DEFAULT_MAX_SPEED__">
+                    <button class="btn secondary" id="btn-apply-max-speed">Set Max Limit</button>
+                </div>
+                <p class="speed-note">
+                    Maximum speed enforced by server: <strong><span id="max-speed-label">__DEFAULT_MAX_SPEED__</span> mm/s</strong>.
+                    Hard safety cap: <strong><span id="abs-max-speed-label">__ABS_MAX_SPEED__</span> mm/s</strong>.
+                </p>
+            </div>
+
+            <div class="panel">
+                <h2>Saved Positions</h2>
+                <div class="controls-row">
+                    <input type="text" id="save-name" placeholder="Position name (e.g. Home)">
+                    <button class="btn secondary" id="btn-save">Save Current</button>
+                </div>
+                <select id="saved-positions" size="6"></select>
+                <div class="controls-row">
+                    <button class="btn" id="btn-go" disabled>Go To Selected</button>
+                    <button class="btn secondary" id="btn-delete">Delete</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Event Log</h2>
+                <div class="history" id="history">
+                    <div class="history-item empty">No events yet.</div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Illumination</h2>
+                <div class="light-status">
+                    <span>Current state:</span>
+                    <span class="light-indicator" id="light-status">Unknown</span>
+                </div>
+                <div class="controls-row">
+                    <button class="btn secondary" id="btn-light-on">Light On</button>
+                    <button class="btn secondary" id="btn-light-off">Light Off</button>
+                </div>
+            </div>
+        </section>
+
+        <div class="footer">
+            <div class="connection-status">
+                <div class="status-indicator disconnected" id="connection-indicator"></div>
+                <span id="connection-label">Disconnected</span>
+            </div>
+            <div>Last update: <span id="last-update">Never</span></div>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            const WS_PORT = Number("__WS_PORT__");
+            const DEFAULT_MAX_SPEED = Number("__DEFAULT_MAX_SPEED__");
+            const ABS_MAX_SPEED = Number("__ABS_MAX_SPEED__");
+            const WS_PATH = "/ws";
+            const KEY_WHITELIST = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "w", "a", "s", "d"];
+            const MAX_HISTORY_ITEMS = 50;
+
+            let ws = null;
+            let reconnectHandle = null;
+            const pressedKeys = new Set();
+            let movementEnabled = false;
+            let statusInitialized = false;
+            let lastLightState = null;
+            let lastMoving = false;
+            let messageTimeout = null;
+            const historyEntries = [];
+
+            const elements = {};
+
+            window.addEventListener("DOMContentLoaded", () => {
+                elements.enableButton = document.getElementById("btn-enable");
+                elements.emergencyButton = document.getElementById("btn-emergency");
+                elements.refreshButton = document.getElementById("btn-refresh");
+                elements.speedInput = document.getElementById("speed-input");
+                elements.applySpeedButton = document.getElementById("btn-apply-speed");
+                elements.maxSpeedInput = document.getElementById("max-speed-input");
+                elements.applyMaxSpeedButton = document.getElementById("btn-apply-max-speed");
+                elements.speedValue = document.getElementById("speed-value");
+                elements.maxSpeedLabel = document.getElementById("max-speed-label");
+                elements.absMaxSpeedLabel = document.getElementById("abs-max-speed-label");
+                elements.saveName = document.getElementById("save-name");
+                elements.saveButton = document.getElementById("btn-save");
+                elements.savedPositions = document.getElementById("saved-positions");
+                elements.goButton = document.getElementById("btn-go");
+                elements.deleteButton = document.getElementById("btn-delete");
+                elements.history = document.getElementById("history");
+                elements.lightOn = document.getElementById("btn-light-on");
+                elements.lightOff = document.getElementById("btn-light-off");
+                elements.lightStatus = document.getElementById("light-status");
+                elements.connectionIndicator = document.getElementById("connection-indicator");
+                elements.connectionLabel = document.getElementById("connection-label");
+                elements.lastUpdate = document.getElementById("last-update");
+                elements.movementStatus = document.getElementById("movement-status");
+                elements.xMm = document.getElementById("x-position-mm");
+                elements.yMm = document.getElementById("y-position-mm");
+                elements.xSteps = document.getElementById("x-position-steps");
+                elements.ySteps = document.getElementById("y-position-steps");
+                elements.messageBar = document.getElementById("message-bar");
+
+                setupEventListeners();
+                renderHistory();
+                updateSpeedDisplay(DEFAULT_MAX_SPEED, DEFAULT_MAX_SPEED, ABS_MAX_SPEED);
+                updateGoButtonState();
+                updateConnectionStatus(false);
+                connectWebSocket();
+
+                // Safety: Periodic validation to detect stuck keys
+                setInterval(validateKeyState, 2000);
+                
+                // Safety: Send periodic heartbeat to refresh direction state
+                // This prevents server-side timeout when keys are held down
+                setInterval(sendDirectionHeartbeat, 500);
+            });
+
+            function setupEventListeners() {
+                document.addEventListener("keydown", handleKeyDown, false);
+                document.addEventListener("keyup", handleKeyUp, false);
+
+                // Critical: Clear all pressed keys when window loses focus or visibility
+                // This prevents "stuck key" bugs where keyup events are missed
+                window.addEventListener("blur", clearAllKeys, false);
+                document.addEventListener("visibilitychange", () => {
+                    if (document.hidden) {
+                        clearAllKeys();
+                    }
+                }, false);
+
+                elements.enableButton.addEventListener("click", () => {
+                    const nextState = !movementEnabled;
+                    if (!isSocketOpen()) {
+                        showMessage("Not connected to controller.", "error");
+                        return;
+                    }
+                    sendMessage({ type: "enable_movement", enabled: nextState });
+                    addHistory(`Movement ${nextState ? "enable" : "disable"} requested`);
+                });
+
+                elements.emergencyButton.addEventListener("click", () => {
+                    sendMessage({ type: "emergency_stop" });
+                    addHistory("Emergency stop triggered", "warning");
+                });
+
+                elements.refreshButton.addEventListener("click", () => {
+                    sendMessage({ type: "request_status" });
+                });
+
+                if (elements.applySpeedButton) {
+                    elements.applySpeedButton.addEventListener("click", applySpeedFromInput);
+                }
+                if (elements.applyMaxSpeedButton) {
+                    elements.applyMaxSpeedButton.addEventListener("click", applyMaxSpeedFromInput);
+                }
+                if (elements.speedInput) {
+                    elements.speedInput.addEventListener("keydown", (event) => {
+                        if (event.key === "Enter") {
+                            event.preventDefault();
+                            applySpeedFromInput();
+                        }
+                    });
+                }
+                if (elements.maxSpeedInput) {
+                    elements.maxSpeedInput.addEventListener("keydown", (event) => {
+                        if (event.key === "Enter") {
+                            event.preventDefault();
+                            applyMaxSpeedFromInput();
+                        }
+                    });
+                }
+
+                elements.saveButton.addEventListener("click", savePosition);
+                elements.saveName.addEventListener("keydown", (event) => {
+                    if (event.key === "Enter") {
+                        event.preventDefault();
+                        savePosition();
+                    }
+                });
+
+                elements.savedPositions.addEventListener("change", updateGoButtonState);
+                elements.goButton.addEventListener("click", goToSavedPosition);
+                elements.deleteButton.addEventListener("click", deleteSavedPosition);
+
+                elements.lightOn.addEventListener("click", () => {
+                    sendMessage({ type: "light", state: "on" });
+                    addHistory("Light on requested");
+                });
+                elements.lightOff.addEventListener("click", () => {
+                    sendMessage({ type: "light", state: "off" });
+                    addHistory("Light off requested");
+                });
+            }
+
+            function handleKeyDown(event) {
+                const key = normalizeKey(event.key);
+                if (!KEY_WHITELIST.includes(key) || event.repeat || isTyping(event.target)) {
+                    return;
+                }
+                event.preventDefault();
+                if (pressedKeys.has(key)) {
+                    return;
+                }
+                pressedKeys.add(key);
+                sendMessage({ type: "key", event: "down", key });
+            }
+
+            function handleKeyUp(event) {
+                const key = normalizeKey(event.key);
+                if (!KEY_WHITELIST.includes(key) || isTyping(event.target)) {
+                    return;
+                }
+                event.preventDefault();
+                if (!pressedKeys.has(key)) {
+                    return;
+                }
+                pressedKeys.delete(key);
+                sendMessage({ type: "key", event: "up", key });
+            }
+
+            function clearAllKeys() {
+                // Release all currently pressed keys
+                if (pressedKeys.size > 0) {
+                    const keysToRelease = Array.from(pressedKeys);
+                    pressedKeys.clear();
+                    keysToRelease.forEach(key => {
+                        sendMessage({ type: "key", event: "up", key });
+                    });
+                    addHistory("All keys cleared (window focus lost)", "warning");
+                }
+            }
+
+            function validateKeyState() {
+                // Validate that we don't have keys stuck in pressed state when movement is disabled
+                if (!movementEnabled && pressedKeys.size > 0) {
+                    const stuckKeys = Array.from(pressedKeys);
+                    addHistory(`Clearing ${stuckKeys.length} stuck key(s): ${stuckKeys.join(', ')}`, "error");
+                    clearAllKeys();
+                }
+            }
+
+            function sendDirectionHeartbeat() {
+                // Periodically resend the current key state to prevent server-side timeouts
+                if (pressedKeys.size > 0 && isSocketOpen()) {
+                    pressedKeys.forEach(key => {
+                        sendMessage({ type: "key", event: "down", key });
+                    });
+                }
+            }
+
+            function isTyping(element) {
+                if (!element) {
+                    return false;
+                }
+                const tag = element.tagName;
+                return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || element.isContentEditable;
+            }
+
+            function normalizeKey(key) {
+                if (key.startsWith("Arrow")) {
+                    return key;
+                }
+                return key.length === 1 ? key.toLowerCase() : key;
+            }
+
+            function connectWebSocket() {
+                const url = buildWebSocketUrl();
+                try {
+                    ws = new WebSocket(url);
+                } catch (error) {
+                    console.error("Failed to create WebSocket:", error);
+                    scheduleReconnect();
+                    return;
+                }
+
+                ws.addEventListener("open", () => {
+                    clearPendingReconnect();
+                    updateConnectionStatus(true);
+                    showMessage("Connected to controller.");
+                    sendMessage({ type: "request_status" });
+                });
+
+                ws.addEventListener("message", (event) => {
+                    handleSocketMessage(event.data);
+                });
+
+                ws.addEventListener("close", () => {
+                    updateConnectionStatus(false);
+                    movementEnabled = false;
+                    updateEnableButton();
+                    clearAllKeys();  // Clear pressed keys on disconnect to prevent phantom movement
+                    if (ws) {
+                        ws = null;
+                    }
+                    scheduleReconnect();
+                });
+
+                ws.addEventListener("error", () => {
+                    if (ws) {
+                        ws.close();
+                    }
+                });
+            }
+
+            function buildWebSocketUrl() {
+                const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+                let port = Number.isFinite(WS_PORT) && WS_PORT > 0 ? WS_PORT : Number(window.location.port) || (protocol === "wss" ? 443 : 80);
+                const host = window.location.hostname || "localhost";
+                const portSegment = port ? `:${port}` : "";
+                return `${protocol}://${host}${portSegment}${WS_PATH}`;
+            }
+
+            function scheduleReconnect() {
+                if (reconnectHandle) {
+                    return;
+                }
+                reconnectHandle = window.setTimeout(() => {
+                    reconnectHandle = null;
+                    connectWebSocket();
+                }, 1500);
+            }
+
+            function clearPendingReconnect() {
+                if (reconnectHandle) {
+                    clearTimeout(reconnectHandle);
+                    reconnectHandle = null;
+                }
+            }
+
+            function handleSocketMessage(raw) {
+                let data;
+                try {
+                    data = JSON.parse(raw);
+                } catch (error) {
+                    console.error("Invalid JSON from controller:", error);
+                    return;
+                }
+
+                if (data.type === "status") {
+                    applyStatus(data);
+                } else if (data.type === "error") {
+                    const message = data.message || "Controller reported an error.";
+                    showMessage(message, "error");
+                    addHistory(`Error: ${message}`, "error");
+                }
+            }
+
+            function applyStatus(data) {
+                if (data.timestamp && elements.lastUpdate) {
+                    elements.lastUpdate.textContent = new Date(data.timestamp).toLocaleTimeString();
+                }
+
+                if (Array.isArray(data.saved_positions)) {
+                    updateSavedPositions(data.saved_positions);
+                }
+
+                const prevEnabled = movementEnabled;
+                movementEnabled = Boolean(data.movement_enabled);
+                updateEnableButton();
+
+                updateSpeedDisplay(
+                    data.speed_mm_s,
+                    data.max_speed_limit_mm_s ?? data.max_speed_mm_s,
+                    data.absolute_max_speed_mm_s ?? ABS_MAX_SPEED,
+                );
+                updateLightState(data.light_state);
+                updatePositionDisplay(data.position);
+
+                if (statusInitialized) {
+                    if (prevEnabled !== movementEnabled) {
+                        addHistory(`Movement ${movementEnabled ? "enabled" : "disabled"}`);
+                    }
+                    const movingNow = Boolean(data.position && data.position.is_moving);
+                    if (movingNow !== lastMoving) {
+                        addHistory(movingNow ? "Stage started moving" : "Stage stopped moving");
+                        lastMoving = movingNow;
+                    }
+                    if (lastLightState !== null && Boolean(data.light_state) !== lastLightState) {
+                        addHistory(`Light turned ${data.light_state ? "on" : "off"}`);
+                    }
+                } else {
+                    lastMoving = Boolean(data.position && data.position.is_moving);
+                }
+
+                lastLightState = Boolean(data.light_state);
+                statusInitialized = true;
+            }
+
+            function updatePositionDisplay(position) {
+                if (!position || position.x_mm === null || position.y_mm === null) {
+                    elements.xMm.textContent = "--";
+                    elements.yMm.textContent = "--";
+                    elements.xSteps.textContent = "--";
+                    elements.ySteps.textContent = "--";
+                } else {
+                    elements.xMm.textContent = formatMm(position.x_mm);
+                    elements.yMm.textContent = formatMm(position.y_mm);
+                    elements.xSteps.textContent = Number(position.x_steps).toLocaleString();
+                    elements.ySteps.textContent = Number(position.y_steps).toLocaleString();
+                }
+                updateMovementStatus(position);
+            }
+
+            function updateMovementStatus(position) {
+                const statusEl = elements.movementStatus;
+                statusEl.classList.remove("status-moving", "status-locked");
+                if (!movementEnabled) {
+                    statusEl.textContent = "Locked";
+                    statusEl.classList.add("status-locked");
+                    updateGoButtonState();
+                    return;
+                }
+                if (position && position.is_moving) {
+                    statusEl.textContent = "Moving";
+                    statusEl.classList.add("status-moving");
+                } else {
+                    statusEl.textContent = "Idle";
+                }
+                updateGoButtonState();
+            }
+
+            function updateEnableButton() {
+                elements.enableButton.dataset.enabled = movementEnabled ? "true" : "false";
+                elements.enableButton.textContent = movementEnabled ? "Disable Movement" : "Enable Movement";
+            }
+
+            function updateSpeedDisplay(speed, configuredMax, absoluteMax) {
+                if (!elements.speedInput || !elements.speedValue || !elements.maxSpeedLabel) {
+                    return;
+                }
+                let hardCap = Number.isFinite(absoluteMax) && absoluteMax > 0 ? Number(absoluteMax) : ABS_MAX_SPEED;
+                let limit = Number.isFinite(configuredMax) && configuredMax > 0 ? Number(configuredMax) : DEFAULT_MAX_SPEED;
+                if (hardCap <= 0) {
+                    hardCap = ABS_MAX_SPEED;
+                }
+                if (limit > hardCap) {
+                    limit = hardCap;
+                }
+                const clamped = clamp(Number(speed) || limit, 0.0001, limit);
+                elements.speedInput.max = limit.toFixed(4);
+                elements.speedInput.value = clamped.toFixed(4);
+                elements.speedValue.textContent = clamped.toFixed(4);
+                elements.maxSpeedLabel.textContent = limit.toFixed(4);
+                if (elements.maxSpeedInput) {
+                    elements.maxSpeedInput.max = hardCap.toFixed(4);
+                    elements.maxSpeedInput.value = limit.toFixed(4);
+                }
+                if (elements.absMaxSpeedLabel) {
+                    elements.absMaxSpeedLabel.textContent = hardCap.toFixed(4);
+                }
+            }
+
+            function updateSavedPositions(list) {
+                const select = elements.savedPositions;
+                const existingValue = select.value;
+                select.innerHTML = "";
+
+                if (!list.length) {
+                    const option = document.createElement("option");
+                    option.value = "";
+                    option.textContent = "No saved positions";
+                    option.disabled = true;
+                    option.selected = true;
+                    select.appendChild(option);
+                    updateGoButtonState();
+                    return;
+                }
+
+                list.forEach((item) => {
+                    const option = document.createElement("option");
+                    option.value = item.name;
+                    option.textContent = `${item.name} — X ${formatMm(item.x_mm)} mm, Y ${formatMm(item.y_mm)} mm`;
+                    select.appendChild(option);
+                });
+
+                if (existingValue && list.some((item) => item.name === existingValue)) {
+                    select.value = existingValue;
+                } else {
+                    select.selectedIndex = 0;
+                }
+
+                updateGoButtonState();
+            }
+
+            function updateLightState(isOn) {
+                const indicator = elements.lightStatus;
+                indicator.classList.remove("on", "off");
+                if (isOn === undefined || isOn === null) {
+                    indicator.textContent = "Unknown";
+                    return;
+                }
+                indicator.textContent = isOn ? "On" : "Off";
+                indicator.classList.add(isOn ? "on" : "off");
+            }
+
+            function updateConnectionStatus(connected) {
+                if (connected) {
+                    elements.connectionIndicator.classList.remove("disconnected");
+                    elements.connectionLabel.textContent = "Connected";
+                } else {
+                    elements.connectionIndicator.classList.add("disconnected");
+                    elements.connectionLabel.textContent = "Disconnected";
+                }
+            }
+
+            function savePosition() {
+                const name = elements.saveName.value.trim();
+                if (!name) {
+                    showMessage("Enter a name to save the current position.", "error");
+                    return;
+                }
+                sendMessage({ type: "save_position", name });
+                addHistory(`Save position '${name}' requested`);
+                elements.saveName.value = "";
+            }
+
+            function goToSavedPosition() {
+                const name = elements.savedPositions.value;
+                if (!name) {
+                    showMessage("Select a saved position first.", "error");
+                    return;
+                }
+                if (!movementEnabled) {
+                    showMessage("Enable movement before commanding a move.", "error");
+                    return;
+                }
+                sendMessage({ type: "move_to_position", name });
+                addHistory(`Move to '${name}' requested`);
+            }
+
+            function deleteSavedPosition() {
+                const name = elements.savedPositions.value;
+                if (!name) {
+                    showMessage("Select a saved position to delete.", "error");
+                    return;
+                }
+                sendMessage({ type: "delete_position", name });
+                addHistory(`Deletion of '${name}' requested`);
+            }
+
+            function applySpeedFromInput() {
+                if (!elements.speedInput) {
+                    showMessage("Speed control not available.", "error");
+                    return;
+                }
+                const raw = parseFloat(elements.speedInput.value);
+                if (!Number.isFinite(raw) || raw <= 0) {
+                    showMessage("Enter a positive speed value.", "error");
+                    return;
+                }
+                const max = parseFloat(elements.speedInput.max) || DEFAULT_MAX_SPEED;
+                const clamped = clamp(raw, 0.0001, max);
+                sendMessage({ type: "set_speed", speed: clamped });
+                addHistory(`Speed set to ${clamped.toFixed(4)} mm/s`);
+            }
+
+            function applyMaxSpeedFromInput() {
+                if (!elements.maxSpeedInput) {
+                    showMessage("Max speed control not available.", "error");
+                    return;
+                }
+                const raw = parseFloat(elements.maxSpeedInput.value);
+                if (!Number.isFinite(raw) || raw <= 0) {
+                    showMessage("Enter a positive max speed value.", "error");
+                    return;
+                }
+                const hardCap = parseFloat(elements.maxSpeedInput.max) || ABS_MAX_SPEED;
+                const clamped = clamp(raw, 0.0001, hardCap);
+                elements.maxSpeedInput.value = clamped.toFixed(4);
+                const currentSpeed = elements.speedInput ? parseFloat(elements.speedInput.value) : clamped;
+                updateSpeedDisplay(currentSpeed, clamped, hardCap);
+                sendMessage({ type: "set_max_speed", limit: clamped });
+                addHistory(`Max speed limit set to ${clamped.toFixed(4)} mm/s`);
+            }
+
+            function renderHistory() {
+                if (!historyEntries.length) {
+                    elements.history.innerHTML = '<div class="history-item empty">No events yet.</div>';
+                    return;
+                }
+                elements.history.innerHTML = historyEntries
+                    .map((entry) => `
+                        <div class="history-item ${entry.level}">
+                            <div class="history-time">${entry.timestamp}</div>
+                            <div class="history-action">${entry.text}</div>
+                        </div>
+                    `)
+                    .join("");
+            }
+
+            function addHistory(text, level = "info") {
+                const entry = {
+                    text,
+                    level,
+                    timestamp: new Date().toLocaleTimeString(),
+                };
+                historyEntries.unshift(entry);
+                if (historyEntries.length > MAX_HISTORY_ITEMS) {
+                    historyEntries.length = MAX_HISTORY_ITEMS;
+                }
+                renderHistory();
+            }
+
+            function showMessage(text, level = "info") {
+                if (!elements.messageBar) {
+                    return;
+                }
+                elements.messageBar.textContent = text;
+                elements.messageBar.dataset.level = level;
+                elements.messageBar.classList.remove("hidden");
+                if (messageTimeout) {
+                    clearTimeout(messageTimeout);
+                }
+                messageTimeout = window.setTimeout(() => {
+                    elements.messageBar.classList.add("hidden");
+                }, 5000);
+            }
+
+            function updateGoButtonState() {
+                const hasSelection = Boolean(elements.savedPositions.value);
+                elements.goButton.disabled = !movementEnabled || !hasSelection;
+            }
+
+            function sendMessage(payload) {
+                if (!isSocketOpen()) {
+                    showMessage("Connection is not ready.", "error");
+                    return;
+                }
+                ws.send(JSON.stringify(payload));
+            }
+
+            function isSocketOpen() {
+                return ws && ws.readyState === WebSocket.OPEN;
+            }
+
+            function clamp(value, min, max) {
+                return Math.min(Math.max(value, min), max);
+            }
+
+            function formatMm(value) {
+                if (value === null || value === undefined) {
+                    return "--";
+                }
+                return Number(value).toFixed(4);
+            }
+        })();
+    </script>
+</body>
+</html>

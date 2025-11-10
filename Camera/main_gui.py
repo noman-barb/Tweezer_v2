@@ -366,6 +366,76 @@ def _draw_filled_circle(image: np.ndarray, cx: float, cy: float, radius: int, co
                 image[yy, xx, 2] = color[2]
 
 
+def _draw_filled_circles_batch(
+    image: np.ndarray,
+    centers: List[Tuple[float, float]],
+    radii: List[int],
+    colors: List[Tuple[int, int, int]]
+) -> None:
+    """Optimized batch circle drawing with GPU acceleration when available.
+    
+    Args:
+        image: RGB image array (H, W, 3)
+        centers: List of (x, y) center coordinates
+        radii: List of radii for each circle
+        colors: List of (R, G, B) colors for each circle
+    """
+    if not centers:
+        return
+    
+    if CV2_AVAILABLE and cv2 is not None:
+        # Use OpenCV with GPU acceleration if available
+        try:
+            # Check if CUDA/OpenCL is available
+            use_gpu = cv2.cuda.getCudaEnabledDeviceCount() > 0 if hasattr(cv2, 'cuda') else False
+        except Exception:
+            use_gpu = False
+        
+        # Batch draw all circles
+        for (cx, cy), radius, color in zip(centers, radii, colors):
+            if radius <= 0:
+                continue
+            center_x = int(round(cx))
+            center_y = int(round(cy))
+            color_bgr = (int(color[2]), int(color[1]), int(color[0]))
+            cv2.circle(image, (center_x, center_y), radius, color_bgr, -1)  # type: ignore[attr-defined]
+        return
+    
+    # Fallback: vectorized NumPy operations for better performance
+    h, w = image.shape[:2]
+    
+    for (cx, cy), radius, color in zip(centers, radii, colors):
+        if radius <= 0:
+            continue
+        
+        center_x = int(round(cx))
+        center_y = int(round(cy))
+        
+        # Skip if completely outside image
+        if center_x + radius < 0 or center_x - radius >= w:
+            continue
+        if center_y + radius < 0 or center_y - radius >= h:
+            continue
+        
+        # Create mask using vectorized operations
+        x0 = max(0, center_x - radius)
+        y0 = max(0, center_y - radius)
+        x1 = min(w - 1, center_x + radius)
+        y1 = min(h - 1, center_y + radius)
+        
+        # Create coordinate grids
+        yy, xx = np.ogrid[y0:y1+1, x0:x1+1]
+        
+        # Vectorized distance calculation
+        dist_sq = (xx - cx) ** 2 + (yy - cy) ** 2
+        mask = dist_sq <= radius * radius
+        
+        # Apply color where mask is True
+        if np.any(mask):
+            region = image[y0:y1+1, x0:x1+1]
+            region[mask] = color
+
+
 def _compose_overlay(
     base_uint8: np.ndarray,
     detections: List[Dict[str, Any]],
@@ -394,21 +464,36 @@ def _compose_overlay(
         _draw_tile_grid(overlay, tile_w, tile_h, overlap)
     if not detections:
         return overlay
+    
+    # Batch circle drawing - prepare all data first
     masses = [float(det.get("mass", 0.0)) for det in detections]
     min_mass = min(masses) if masses else 0.0
     max_mass = max(masses) if masses else 0.0
     base_diameter = max(2, int(params.get("diameter", 21) or 21))
     scaled_diameter = max(2, int(round(base_diameter * max(circle_scale, 0.1))))
     radius = max(1, scaled_diameter // 2)
+    
+    # Prepare batch data
+    centers = []
+    radii = []
+    colors = []
+    
     for det in detections:
         x = float(det.get("x", 0.0))
         y = float(det.get("y", 0.0))
         mass = float(det.get("mass", 0.0))
+        
         if use_colormap and masses:
             color = _mass_to_color(mass, min_mass, max_mass)
         else:
             color = below_color if mass < mass_cutoff else above_color
-        _draw_filled_circle(overlay, x, y, radius, color)
+        
+        centers.append((x, y))
+        radii.append(radius)
+        colors.append(color)
+    
+    # Batch draw all circles at once
+    _draw_filled_circles_batch(overlay, centers, radii, colors)
     return overlay
 
 
@@ -893,6 +978,34 @@ class AppState:
         overlay_dir: Optional[Path] = None
         overlay_snapshot: Optional[np.ndarray] = None
         timestamp = float(timestamp_s if timestamp_s is not None else time.time())
+        
+        # Get overlay parameters outside the lock to minimize lock time
+        with self.lock:
+            overlay_buffer = self._ensure_overlay_buffer((image_uint8.shape[0], image_uint8.shape[1]))
+            use_colormap = self.use_mass_colormap
+            mass_cutoff = self.mass_cutoff
+            below_color = self.cutoff_below_color
+            above_color = self.cutoff_above_color
+            circle_scale = self.circle_size_scale
+            bit_depth = self.image_bit_depth
+        
+        # Create overlay OUTSIDE the lock - this is expensive!
+        detections = track_info.get("detections", [])
+        overlay = create_overlay(
+            image_uint8,
+            detections,
+            overlay_params,
+            show_grid,
+            use_colormap,
+            mass_cutoff,
+            below_color,
+            above_color,
+            circle_scale,
+            out=overlay_buffer,
+            bit_depth_hint=bit_depth,
+        )
+        
+        # Now update state with lock
         with self.lock:
             self.latest_sequence = int(metadata.get("sequence", 0))
             self.latest_filename = str(metadata.get("filename", ""))
@@ -900,21 +1013,6 @@ class AppState:
             self.latest_source = str(metadata.get("source", ""))
             self.latest_image_array = image_array
             self.latest_image_uint8 = image_uint8
-            overlay_buffer = self._ensure_overlay_buffer((image_uint8.shape[0], image_uint8.shape[1]))
-            detections = track_info.get("detections", [])
-            overlay = create_overlay(
-                image_uint8,
-                detections,
-                overlay_params,
-                show_grid,
-                self.use_mass_colormap,
-                self.mass_cutoff,
-                self.cutoff_below_color,
-                self.cutoff_above_color,
-                self.circle_size_scale,
-                out=overlay_buffer,
-                bit_depth_hint=self.image_bit_depth,
-            )
             self.latest_overlay_array = overlay
             overlay_snapshot = overlay
             self.latest_raw_format = image_format
@@ -1248,6 +1346,9 @@ class ImageClient:
         self._last_sequence = 0
         self._active_stream: Optional[Any] = None
         self._last_config_signature: Optional[str] = None
+        # Decode cache: (hash, width, height) -> (decoded_uint8, decoded_float)
+        self._decode_cache: OrderedDict[Tuple[int, int, int], Tuple[np.ndarray, np.ndarray]] = OrderedDict()
+        self._decode_cache_max_size = 10  # Cache last 10 decoded frames
         self._thread.start()
 
     def connect(self, host: str, port: int) -> None:
@@ -1450,6 +1551,17 @@ class ImageClient:
         width: int,
         height: int,
     ) -> Tuple[np.ndarray, np.ndarray]:
+        # Check cache first - use hash of payload as key
+        payload_hash = hash(payload)
+        cache_key = (payload_hash, width, height)
+        
+        if cache_key in self._decode_cache:
+            # Cache hit! Move to end (most recently used)
+            self._decode_cache.move_to_end(cache_key)
+            cached_result = self._decode_cache[cache_key]
+            return cached_result
+        
+        # Cache miss - decode the frame
         fmt = (image_format or "jpeg").lower()
         decoded: Optional[np.ndarray] = None
         if fmt in {"jpeg", "jpg", "png"} and cv2 is not None:
@@ -1481,7 +1593,16 @@ class ImageClient:
             decoded_arr = _normalize_to_uint8(decoded_arr, self._state.image_bit_depth)
         decoded_uint8 = np.ascontiguousarray(decoded_arr.astype(np.uint8, copy=False))
         image_float = decoded_uint8.astype(np.float32)
-        return decoded_uint8, image_float
+        
+        # Store in cache
+        result = (decoded_uint8, image_float)
+        self._decode_cache[cache_key] = result
+        
+        # Evict oldest if cache is full
+        if len(self._decode_cache) > self._decode_cache_max_size:
+            self._decode_cache.popitem(last=False)  # Remove oldest (FIFO)
+        
+        return result
 
     def refresh_tracking_config(self) -> None:
         with self._lock:

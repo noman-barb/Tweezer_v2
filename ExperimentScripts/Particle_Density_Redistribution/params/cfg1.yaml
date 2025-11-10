@@ -1,0 +1,27 @@
+created_at: '2025-11-09T12:53:45.610521+00:00'
+description: ''
+params:
+  analysis_interval: 5
+  assumed_fps: 30.0
+  delay_between_moves: 2.0
+  density_smoothing_sigma: 1.5
+  edge_margin: 64.0
+  grid_size: 20
+  high_density_threshold: 75.0
+  log_progress_interval: 10
+  log_status_interval: 30
+  low_density_threshold: 25.0
+  max_cycles: 100
+  max_movement_distance: 300.0
+  max_movement_speed: 100.0
+  min_particle_separation: 40.0
+  movement_duration_max: 4.0
+  movement_duration_min: 0.5
+  slm_max_refresh_rate: 30.0
+  step_close_enough_threshold: 1.0
+  target_reached_threshold: 5.0
+  target_zone_radius: 100.0
+  trap_intensity: 0.8999999761581421
+  trap_z_offset: 0.0
+script_name: Particle Density Redistribution
+updated_at: '2025-11-09T12:53:45.610521+00:00'

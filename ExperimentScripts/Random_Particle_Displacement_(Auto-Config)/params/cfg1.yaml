@@ -6,6 +6,7 @@ params:
   edge_margin: 128.0
   log_progress_interval: 10
   log_status_interval: 30
+  min_particle_mass: 0.0
   min_separation_distance: 64.0
   move_distance_max: 64.0
   move_distance_min: 24.0
