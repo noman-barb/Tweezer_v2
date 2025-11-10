@@ -4,6 +4,7 @@ global:
   repo_root: ../
   log_base_dir: ../logs/service_logs
   stop_services_on_exit: true
+  fffmpeg_path: /usr/bin/ffmpeg
 services:
   arduino_grpc:
     enabled: true
