@@ -119,11 +119,21 @@ def map_u16_to_u8(img_u16: np.ndarray, mode: str) -> np.ndarray:
 
 
 def build_filelist(directory: Path) -> List[Path]:
+    import re
     exts = ("*.jxl", "*.JXL")
     files: List[Path] = []
     for pat in exts:
-        files.extend(sorted(p for p in directory.glob(pat) if p.is_file()))
-    return files
+        files.extend(p for p in directory.glob(pat) if p.is_file())
+    
+    # Sort numerically by extracting numbers from filename
+    def numeric_key(path: Path) -> tuple:
+        # Extract all numbers from the stem (filename without extension)
+        numbers = re.findall(r'\d+', path.stem)
+        # Convert to integers for proper numeric sorting
+        # Return as tuple of ints; files without numbers sort first
+        return tuple(int(n) for n in numbers) if numbers else ()
+    
+    return sorted(files, key=numeric_key)
 
 
 def main():
