@@ -108,6 +108,11 @@ class GlobalConfig:
     repo_root: str = "../../"
     log_base_dir: str = "../../logs/service_logs"
     stop_services_on_exit: bool = True
+    slm_config_dir: Optional[str] = None
+    slm_feature_config_dir: Optional[str] = None
+    tracking_config_dir: Optional[str] = None
+    # Store any additional unknown fields from the config file
+    _extra_fields: Dict[str, Any] = field(default_factory=dict)
 
 
 class ServicesManager:
@@ -133,6 +138,16 @@ class ServicesManager:
         self.global_config.repo_root = global_cfg.get('repo_root', '../../')
         self.global_config.log_base_dir = global_cfg.get('log_base_dir', '../../logs/service_logs')
         self.global_config.stop_services_on_exit = global_cfg.get('stop_services_on_exit', True)
+        self.global_config.slm_config_dir = global_cfg.get('slm_config_dir')
+        self.global_config.slm_feature_config_dir = global_cfg.get('slm_feature_config_dir')
+        self.global_config.tracking_config_dir = global_cfg.get('tracking_config_dir')
+        
+        # Store any unknown fields to preserve them on save
+        known_global_fields = {'python_bin', 'conda_env', 'repo_root', 'log_base_dir', 
+                              'stop_services_on_exit', 'slm_config_dir', 'slm_feature_config_dir',
+                              'tracking_config_dir'}
+        self.global_config._extra_fields = {k: v for k, v in global_cfg.items() 
+                                           if k not in known_global_fields}
         
         # Load services
         services_cfg = config.get('services', {})
@@ -168,6 +183,17 @@ class ServicesManager:
             },
             'services': {}
         }
+        
+        # Add optional global fields if present
+        if self.global_config.slm_config_dir:
+            config['global']['slm_config_dir'] = self.global_config.slm_config_dir
+        if self.global_config.slm_feature_config_dir:
+            config['global']['slm_feature_config_dir'] = self.global_config.slm_feature_config_dir
+        if self.global_config.tracking_config_dir:
+            config['global']['tracking_config_dir'] = self.global_config.tracking_config_dir
+        
+        # Preserve any unknown fields from the original config
+        config['global'].update(self.global_config._extra_fields)
         
         for key, svc in self.services.items():
             service_cfg = {
