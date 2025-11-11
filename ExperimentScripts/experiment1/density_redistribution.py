@@ -395,7 +395,7 @@ class DensityRedistribution(ExperimentScript):
             param_type=int,
             default=100,
             min_value=1,
-            max_value=1000,
+            max_value=10000000,
             step=10,
             unit='cycles',
             category='Control',

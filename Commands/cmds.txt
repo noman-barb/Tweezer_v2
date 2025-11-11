@@ -1,0 +1,7 @@
+
+####deleting files greater than 831500
+
+# dry run
+for f in *_*.jxl; do n=${f##*_}; n=${n%.jxl}; [ "$n" -gt 831500 ] && echo "$f"; done
+# actual deletion
+for f in *_*.jxl; do n=${f##*_}; n=${n%.jxl}; [ "$n" -gt 831500 ] && echo "Deleting $f" && rm "$f"; done

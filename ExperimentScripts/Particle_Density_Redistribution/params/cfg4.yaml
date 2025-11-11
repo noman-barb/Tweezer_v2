@@ -1,21 +1,21 @@
-created_at: '2025-11-09T13:02:52.432978+00:00'
+created_at: '2025-11-10T15:50:54.046695+00:00'
 description: ''
 params:
   analysis_interval: 5
   assumed_fps: 25.0
-  delay_between_moves: 0.1
+  delay_between_moves: 0.10000000149011612
   density_smoothing_sigma: 1.5
   edge_margin: 64.0
   grid_size: 10
-  high_density_threshold: 80.0
+  high_density_threshold: 70.0
   log_progress_interval: 10
   log_status_interval: 30
-  low_density_threshold: 50.0
-  max_cycles: 100000
+  low_density_threshold: 10.0
+  max_cycles: 99999
   max_movement_distance: 1000.0
   max_movement_speed: 64.0
   min_particle_mass: 25000.0
-  min_particle_separation: 40.0
+  min_particle_separation: 10.0
   movement_duration_max: 4.0
   movement_duration_min: 4.0
   slm_max_refresh_rate: 25.0
@@ -25,4 +25,4 @@ params:
   trap_intensity: 1.0
   trap_z_offset: 0.0
 script_name: Particle Density Redistribution
-updated_at: '2025-11-09T13:02:52.432978+00:00'
+updated_at: '2025-11-10T15:50:54.046695+00:00'

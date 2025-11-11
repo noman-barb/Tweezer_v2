@@ -1,0 +1,20 @@
+created_at: '2025-11-11T02:29:50.173601+00:00'
+description: ''
+params:
+  assumed_fps: 25.0
+  delay_between_actions: 10.0
+  edge_margin: 128.0
+  log_progress_interval: 10
+  log_status_interval: 30
+  min_separation_distance: 64.0
+  move_distance_max: 96.0
+  move_distance_min: 24.0
+  movement_duration_max: 8.0
+  movement_duration_min: 0.6000000238418579
+  slm_max_refresh_rate: 25.0
+  step_close_enough_threshold: 1.0
+  target_reached_threshold: 5.0
+  trap_intensity: 1.0
+  trap_z_offset: 0.0
+script_name: Random Particle Displacement (Auto-Config)
+updated_at: '2025-11-11T02:29:50.173601+00:00'
